@@ -1,0 +1,27 @@
+diff -up smartmontools-5.39.1/smartctl.8.in.ccissman smartmontools-5.39.1/smartctl.8.in
+--- smartmontools-5.39.1/smartctl.8.in.ccissman	2010-01-28 21:24:33.000000000 +0100
++++ smartmontools-5.39.1/smartctl.8.in	2011-01-24 17:06:19.079960149 +0100
+@@ -405,6 +405,23 @@ of the HighPoint RocketRAID controller.
+ 
+ .B HighPoint RocketRAID controllers are currently ONLY supported under Linux and FreeBSD.
+ 
++If you are using the cciss driver, the correct syntax is
++.nf
++\fBsmartctl \-a \-d cciss,0 /dev/cciss/c0d0\fP
++.fi
++This will give the smart information about the first physical disk drive (0)
++connect to the controller at /dev/cciss/c0d0 . (Disk drive numbering is 0
++based)
++
++If you are using the hpsa driver, the correct syntax is
++.nf
++\fBsmartctl \-a \-d cciss,1 /dev/sg0\fP
++.fi
++This will give the SMART information about the second physical disk drive (1)
++connected to the controller at /dev/sg0
++
++To get the controller device node you will need to run \fBlsscsi \-g\fP.
++
+ .B cciss controllers are currently ONLY supported under Linux and FreeBSD.
+ 
+ .TP
