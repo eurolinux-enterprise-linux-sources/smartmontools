@@ -96,16 +96,6 @@ diff -up smartmontools-5.39/smartd.cpp.lowcap smartmontools-5.39/smartd.cpp
  // used for control of printing, passing arguments to atacmds.c
  smartmonctrl *con=NULL;
  
-@@ -875,8 +884,7 @@ static void MailWarning(const dev_config
-   const char *unknown="[Unknown]";
- 
-   // See if user wants us to send mail
--  if (cfg.emailaddress.empty() && cfg.emailcmdline.empty())
--    return;
-+ 
- 
-   std::string address = cfg.emailaddress;
-   const char * executable = cfg.emailcmdline.c_str();
 @@ -917,6 +925,15 @@ static void MailWarning(const dev_config
      if  (epoch<(mail->lastsent+days))
        return;

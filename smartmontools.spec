@@ -1,7 +1,7 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
 Version:	5.39.1
-Release:	3%{?dist}
+Release:	5%{?dist}
 Epoch:		1
 Group:		System Environment/Base
 License:	GPLv2+
@@ -55,9 +55,9 @@ ln -s CHANGELOG ChangeLog
 autoreconf -i
 %configure --with-selinux --with-libcap-ng=yes
 %ifarch sparc64
-make CXXFLAGS="$RPM_OPT_FLAGS -fPIE" LDFLAGS="-pie -Wl,-z,relro,-z,now"
+make CXXFLAGS="$RPM_OPT_FLAGS -fPIE -fno-strict-aliasing" LDFLAGS="-pie -Wl,-z,relro,-z,now"
 %else
-make CXXFLAGS="$RPM_OPT_FLAGS -fpie" LDFLAGS="-pie -Wl,-z,relro,-z,now"
+make CXXFLAGS="$RPM_OPT_FLAGS -fpie -fno-strict-aliasing" LDFLAGS="-pie -Wl,-z,relro,-z,now"
 %endif
 
 %install
@@ -94,6 +94,12 @@ fi
 %config(noreplace) %{_sysconfdir}/sysconfig/smartmontools
 
 %changelog
+* Tue Aug 02 2011 Michal Hlavinka <mhlavink@redhat.com> - 1:5.39.1-5
+- do not use strict aliasing
+
+* Tue Aug 02 2011 Michal Hlavinka <mhlavink@redhat.com> - 1:5.39.1-4
+- do not try to send mail, when no mail address is specified (#697867)
+
 * Mon Jan 24 2011 Michal Hlavinka <mhlavink@redhat.com> - 1:5.39.1-3
 - extended smartctl man pages with examples how to use cciss
 - fix crash when starting selftest on megaraid controller
