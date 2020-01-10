@@ -1,15 +1,15 @@
 #
-# $Id: configure.in 3458 2011-10-20 19:20:23Z chrfranke $
+# $Id: configure.in 3573 2012-06-30 14:03:55Z chrfranke $
 #
 dnl Process this file with autoconf to produce a configure script.
 AC_PREREQ(2.50)
-AC_INIT(smartmontools, 5.42, smartmontools-support@lists.sourceforge.net)
+AC_INIT(smartmontools, 5.43, smartmontools-support@lists.sourceforge.net)
 AC_CONFIG_SRCDIR(smartctl.cpp)
 
 smartmontools_configure_date=`date -u +'%Y-%m-%d %T %Z'`
-smartmontools_cvs_tag=`echo '$Id: configure.in 3458 2011-10-20 19:20:23Z chrfranke $'`
-smartmontools_release_date=2011-10-20
-smartmontools_release_time="19:19:34 UTC"
+smartmontools_cvs_tag=`echo '$Id: configure.in 3573 2012-06-30 14:03:55Z chrfranke $'`
+smartmontools_release_date=2012-06-30
+smartmontools_release_time="14:03:01 UTC"
 
 AC_DEFINE_UNQUOTED(SMARTMONTOOLS_CONFIGURE_ARGS, "$ac_configure_args",            [smartmontools Configure Arguments])
 AC_DEFINE_UNQUOTED(SMARTMONTOOLS_CONFIGURE_DATE, "$smartmontools_configure_date", [smartmontools Configure Date])
@@ -20,7 +20,7 @@ AC_DEFINE_UNQUOTED(PACKAGE_HOMEPAGE,             "http://smartmontools.sourcefor
 
 AM_CONFIG_HEADER(config.h)
 
-AM_INIT_AUTOMAKE
+AM_INIT_AUTOMAKE([foreign])
 
 AM_MAINTAINER_MODE
 
@@ -30,8 +30,10 @@ AC_PROG_CXX
 AM_PROG_AS
 AC_PROG_INSTALL
 
+m4_pattern_forbid([^PKG_PROG_])
 if test "$cross_compiling" = "no"; then
-  PKG_PROG_PKG_CONFIG
+  m4_ifdef([PKG_PROG_PKG_CONFIG], [PKG_PROG_PKG_CONFIG],
+    [AC_MSG_WARN([m4/pkg.m4 missing, systemd detection disabled])])
 fi
 
 AC_ARG_VAR(WINDMC, [Windows message compiler command])
@@ -64,12 +66,17 @@ esac
 # Check for SVN.
 AC_MSG_CHECKING([whether this is a build from SVN])
 is_svn_build=no
+svn_deps=
 if test -f "$srcdir/.svn/entries"; then
   is_svn_build=unknown
   if (cd "$srcdir" && svn --version && svnversion && svn info) >/dev/null 2>&1; then
     is_svn_build=yes
+    svn_deps='${srcdir}/.svn/entries'
+    # SVN 1.7 working copy?
+    test -f "$srcdir/.svn/wc.db" && svn_deps='${srcdir}/.svn/wc.db'
   fi
 fi
+AC_SUBST([svn_deps])
 AM_CONDITIONAL(IS_SVN_BUILD, [test "$is_svn_build" = "yes"])
 AC_MSG_RESULT([$is_svn_build])
 
@@ -80,6 +87,10 @@ AC_SEARCH_LIBS(socket, socket)
 AC_SEARCH_LIBS(gethostbyname, nsl)
 AC_SEARCH_LIBS(getaddrinfo, nsl)
 AC_SEARCH_LIBS(getdomainname, nsl)
+
+# Note: On Linux, clock_gettime() requires -lrt which implies -lpthreads
+# Check ommitted for now, gettimeofday() provides reasonable precision
+# AC_SEARCH_LIBS(clock_gettime, rt)
 
 dnl Checks for header files.
 AC_CHECK_HEADERS([locale.h])
@@ -130,6 +141,7 @@ AC_CHECK_FUNCS([gethostbyname])
 AC_CHECK_FUNCS([sigset])
 AC_CHECK_FUNCS([strtoull])
 AC_CHECK_FUNCS([uname])
+AC_CHECK_FUNCS([clock_gettime ftime gettimeofday])
 
 # Check byte ordering (defines WORDS_BIGENDIAN)
 AC_C_BIGENDIAN

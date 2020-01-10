@@ -1,6 +1,6 @@
 CHANGELOG for smartmontools
 
-$Id: CHANGELOG 3458 2011-10-20 19:20:23Z chrfranke $
+$Id: CHANGELOG 3573 2012-06-30 14:03:55Z chrfranke $
 
 The most recent version of this file is:
 http://smartmontools.svn.sourceforge.net/viewvc/smartmontools/trunk/smartmontools/CHANGELOG?view=markup
@@ -40,6 +40,376 @@ Maintainers / Developers Key (alphabetic order):
 [RZ]  Richard Zybert
 
 <DEVELOPERS: ADDITIONS TO THE CHANGE LOG GO JUST BELOW HERE, PLEASE>
+
+smartmontools 5.43 2012-06-30
+
+  [CF] drivedb.h USB updates:
+       - Toshiba Canvio Basics (0x0480:0xa006)
+       - A-DATA DashDrive (0x125f:0xa94a)
+
+  [CF] drivedb.h: Hitachi Travelstar 7K500: *A362/3 variants
+
+  [CF] Windows: Add Windows Server 2012 to get_os_version_str().
+
+  [CF] drivedb.h updates:
+       - Sandforce Driven SSDs: OWC Mercury Electra 3/6G SSD
+       - Seagate Momentus SpinPoint M8
+       - Hitachi Deskstar 5K4000
+       - Toshiba 2.5" HDD MK..61GSYN
+       - Seagate Barracuda (SATA 3Gb/s, 4K Sectors): 1TB, *DM003-* variant
+
+  [CF] smartctl.8.in: Note performance impact of self-tests.
+
+  [CF] os_win32.cpp: Add support for older Areca drivers which used a
+       different target id.  Patch was provided by Hank Wu from Areca.
+
+  [CF] smartctl.8.in: Add info about HP Smart Array controllers.
+       Original patch was provided by Don Brace from HP.
+
+  [CF] os_freebsd.cpp: add SAT autodetection to '-d cciss,N' device type
+       (ticket #202).
+       Add missing freebsd_areca_device::m_encnum (regression from r3542).
+       Patch was provided by Don Brace from HP.
+
+  [CF] os_linux.cpp: add SAT autodetection to '-d cciss,N' device type
+       (ticket #202).
+
+  [CF] Makefile.am: FIXHTML modified for newer man2html versions.
+
+  [CF] autogen.sh: automake 1.11.5 is OK.
+
+  [CF] man pages: Minor updates and syntax fixes.
+
+  [CF] smartd.service.in: Add ExecReload and StandardOutput.
+       Make EnvironmentFile optional (ticket #194).
+
+  [CF] drivedb.h USB updates:
+       - HP Desktop HD BD07 (0x03f0:0xbd07)
+       - Iomega Prestige Desktop USB 3.0 (0x059b:0x0070)
+       - Prolific PL2507 (0x067b:0x2507): unsupported -> -d usbjmicron,0
+       - WD My Passport USB 3.0 (0x1058:0x0748)
+       - WD My Book Essential USB 3.0 (0x1058:0x1140)
+       - Sharkoon SATA QuickDeck Pro (0x1f75:0x0888): unsupported
+       - Hitachi Touro Desk (0x4971:0x1015)
+
+  [CF] Move function str_starts_with() to utility.h.
+
+  [CF] smartctl.8.in, smartd.conf.5.in: Note required Areca SAS firmware version.
+
+  [CF] INSTALL, smartctl.8.in: Announce OS X SAT SMART Driver (ticket #25).
+
+  [CF] Add smart_device::is_syscall_unsup().
+
+  [CF] os_win32.cpp: Avoid ENOTSUP which is not provided by some versions
+       of MinGW.
+
+  [DG] os_linux.cpp: Fix scsi pass-through SG_INFO_CHECK mask logic
+       (ticket #225)
+
+  [CF] drivedb.h updates:
+       - Sandforce Driven SSDs: OCZ-NOCTI
+       - Intel 330 Series SSDs (ticket #227)
+
+  [CF] smartctl.8.in, smartd.conf.5.in: Document '-d areca N[/E]' support
+       for Windows.
+
+  [CF] os_win32.cpp: Add help text and error messages for '-d areca,N[/E]'.
+
+  [CF] os_win32.cpp win_areca_device: Disable full 48-bit ATA support.
+       Add missing set_err() calls.  Remove unused function and parameter.
+
+  [CF] os_win32.cpp: Add support for SATA disks behind Areca SATA and SAS
+       controllers.  Requires '-d areca,N[/E]' as type and '[/dev/]arcmsrX'
+       as device name.
+
+       Patch was provided by Hank Wu from Areca.
+
+  [CF] Windows installer: Make name of checksum file 32-/64-bit specific.
+
+  [CF] Windows installer: Add support for combined 32-/64-bit installer.
+
+  [CF] Windows installer: Drop support for UBCD4Win.
+
+  [AS] os_freebsd.cpp: sync Areca code with linux version by adding optional 
+       enclosure number.
+
+  [CF] smartctl.8.in, smartd.conf.5.in: Add brief doc for '-d areca N/E'.
+
+  [CF] os_linux.cpp: Add optional enclosure number to '-d areca' option.
+       This adds support for SATA disks behind Areca SAS controllers.
+
+       Patch was provided by Hank Wu from Areca.
+
+  [CF] smartctl: Add log addresses and statistics value from ACS-3 revision 2.
+
+  [CF] drivedb.h updates:
+       - Crucial/Micron RealSSD C300/C400/m4: m4 512GB
+       - Indilinx Everest/Martini based SSDs: OCZ-PETROL
+       - SAMSUNG SpinPoint F4 EG (AFT): Fix link
+       - Seagate Momentus 4200.2: ST960812A
+       - Seagate Momentus 5400.2: ST960821A (from 4200.2)
+       - Seagate Barracuda 7200.12: ST3500413AS
+       - Western Digital RE3 Serial ATA: WD7502ABYS
+       - Western Digital AV-GP: WD....AV[CD]S, split entry
+       - Western Digital AV-GP (Adv. Format): WD10EU[CR]X
+
+  [CF] autogen.sh: Set svn:eol-style=LF to be compatible with Cygwin bash.
+
+  [CF] autogen.sh: automake 1.11.3 is OK.
+
+  [CF] drivedb.h updates:
+       - Sandforce Driven SSDs: Smart Storage Systems XceedSTOR,
+         XceedIOPS2, Xcel-200
+       - Smart Storage Systems XceedSecure2 SSDs
+       - Smart Storage Systems XceedUltraX/Adtron A25FBX SSDs
+       - Smart Storage Systems Adtron A25FB 2xN SSDs
+       - Smart Storage Systems Adtron A25FB 3xN SSDs
+       Original patch was provided by Rusty Carruth
+
+  [CF] drivedb.h updates:
+       - Remove outdated IBM links
+       - Update all links to Seagate Knowledge Base
+       - Hitachi Deskstar 7K1000.D
+
+  [CF] drivedb.h USB update:
+       - Seagate Expansion External (0x0bc2:0x3332) (ticket #223)
+
+  [CF] drivedb.h USB updates:
+       - Samsung Story Station (0x04e8:0x5f05)
+       - Toshiba STOR.E (0x0930:0x0b1b)
+
+  [CF] smartctl: Add options '-f hex' and '-f hex,[id|val]' to print
+       attribute IDs and/or values as hex.
+
+  [CF] smartd.8.in: Fix signal name (Debian bug 661801).
+
+  [CF] Add 'raw56', 'hex56', 'raw24(raw8)' attribute print formats.
+       Change default for Power_On_Hours to 'raw24(raw8)'.
+       This provides more reasonable output for SandForce based devices
+       missing in drivedb.h.
+
+  [CF] configure.in, Makefile.am: Support new SVN 1.7 working copy format.
+
+  [CF] drivedb.h update:
+       - Intel 520 Series SSDs: Add units to attributes 241, 242, 249.
+
+  [AS] drivedb.h: fixed identifier for Seagate SV35 series.
+
+  [CF] Print command duration in ATA debug output.
+       Add smart_interface::get_timer_usec().
+
+  [CF] drivedb.h updates:
+       - SandForce Driven SSDs: G.SKILL Phoenix Pro
+       - Intel 520 Series SSDs
+       - SAMSUNG SpinPoint F4 EG: Update firmware download link
+
+  [CF] drivedb.h updates:
+       - Add comment with default settings.
+       - Samsung based SSDs: Fix attribute 240
+
+  [CF] Windows: Add Win8 to get_os_version_str().
+
+  [CF] Windows: Remove MSVC specific pragma, disable warning in project file.
+
+  [CF] Add '-d sat,auto[,N]' option for controller independent SAT detection.
+
+  [CF] dev_interface.h: Replace this_is_ata/scsi(*) by hide_ata/scsi(bool).
+
+  [CF] smartctl: Allow '-d test' in conjunction with other '-d TYPE' options.
+
+  [AS] FreeBSD: sync init script with one from ports repository.
+
+  [CF] drivedb.h updates:
+       - SandForce Driven SSDs: ADATA S510
+       - JMicron based SSDs: Toshiba THNSNC128GMLJ
+       - Samsung based SSDs: 830 Series
+       - Hitachi Deskstar E7K1000
+       - Hitachi Ultrastar A7K1000: Fix name, allow trailing characters
+       - Hitachi Ultrastar A7K2000: Remove duplicate entry
+       - Toshiba 2.5" HDD MK..55GSX
+       - Western Digital AV-GP: WD..EURS variants
+
+  [CF] drivedb.h USB updates:
+       - Buffalo MiniStation HD-PCTU2 (0x0411:0x01d9) (ticket #211)
+       - Philips SDE3273VC/97 (0x0471:0x2021) (ticket #212)
+       - Samsung M2 Portable 3.0 (0x04e8:0x60c5)
+       - Iomega GDHDU2 (0x059b:0x0475)
+       - LaCie minimus USB 3.0 (0x059f:0x104a)
+       - Seagate FreeAgent GoFlex Desk USB 3.0 (0x0bc2:0x50a5)
+       - Maxtor BlackArmor Portable (0x0d49:0x7550)
+       - WD My Passport Essential SE USB 3.0 (0x1058:0x0742)
+       - Initio (0x13fd:0x1e40)
+       - Verbatim External Hard Drive 2TB (0x18a5:0x022a)
+       - Hitachi Touro Desk (0x4971:0x1011)
+
+  [CF] smartd: Add smartd.conf directive '-e' to set ATA settings on
+       startup: aam, apm, lookahead, security-freeze, standby, wcache.
+
+  [CF] drivedb.h updates:
+       - SandForce Driven SSDs: Corsair Force GT
+       - Indilinx Barefoot based SSDs: Corsair Nova
+       - SAMSUNG SpinPoint M8
+       - Seagate SV35.5
+
+  [CF] smartctl: Change short option for '--set' from '-e' to '-s'.
+       Keep backward compatibility with short option for '--smart'.
+
+  [CF] smartctl: Print description of APM level.
+
+  [CF] smartctl: Add option '-e standby,[N|off|now]' to set standby timer
+       or standby mode.
+
+  [CF] smartctl: Add options '-g security' and '-e security-freeze' to
+       get/freeze ATA security settings.
+
+  [CF] smartctl: Add options '-g/e lookahead' and '-g/e wcache' to get/set
+       read look-ahead and write cache feature.
+
+  [CF] smartctl: Add options '-g aam' and '-e aam,[N|off]' to get/set
+       ATA Automatic Acoustic Management feature.  Add '-g all'.
+
+  [CF] os_win32.cpp: Prevent warnings from gcc option -Wformat-security.
+
+  [CF] smartctl: Add options '-g, --get apm' and '-e, --set apm,[N|off]'
+       to get/set ATA Advanced Power Management feature.
+       Original patch was provided by Marcus Sorensen.
+
+  [AS] os_freebsd.cpp - do not skip ATA devices from cam list. Starting from
+       FreeBSD 9.0 such devices are exported ONLY as camdev`s, so DEVICESCAN
+       was broken. Its possible to get duplicates now on some old systems.
+
+  [CF] drivedb.h updates:
+       - SandForce Driven SSDs: Add OCZ Solid 3, OCZ Deneva 2 C/R
+       - Seagate Momentus 5400.7
+
+  [CF] Happy New Year! Update copyright year in version info.
+
+  [CF] drivedb.h updates:
+       - SandForce Driven SSDs: Add Patriot Pyro
+       - Intel 320 Series SSDs: Fix 40GB
+       - Seagate Barracuda XT: Add 4TB
+
+  [CF] drivedb.h updates:
+       - SandForce Driven SSDs: Add Corsair Force 3
+       - Hitachi Travelstar 5K320: Add SA00 and SA02 models
+       - Western Digital Caviar SE SATA: Add 300GB
+
+  [CF] Cygwin smartd: Remove SIGQUIT workaround, no longer needed with
+       current Cygwin tty emulation.
+
+  [CF] smartd: Disable auto standby also after start of scheduled
+       self-test.
+
+  [CF] smartd: Add smartd.conf DEFAULT directive.  Allows to set default
+       settings for multiple devices.
+
+  [CF] smartd: Re-enable auto standby if smartd.conf is re-read.
+
+  [AS] drivedb.h update: Seagate Barracuda (SATA 3Gb/s, 4K Sectors)
+
+  [AS] drivedb.h update: Seagate Constellation ES.2 (SATA 6Gb/s)
+
+  [CF] drivedb.h updates:
+       - Sandforce Driven SSDs: Add OCZ Vertex 3 Max IOPS (ticket #209)
+       - Seagate ST1.2 CompactFlash (found in ticket #125)
+
+  [CF] Fix GPL version reported by '-V' option.
+       Now reports GPLv2+ which is consistent with file headers.
+       Patch was provided by Stanislav Brabec.
+
+  [CF] drivedb.h updates:
+       - Sandforce Driven SSDs: Add OCZ Deneva 2 Async variant, 60GB, 480GB
+       - Indilinx Martini based SSDs: OCZ VERTEX-PLUS only
+
+  [CF] smartd: Add '-l offlinests,ns' and '-l selfteststs,ns' directives.
+       dev_interface: Add smart_interface::disable_system_auto_standby().
+       os_win32.cpp: Implement disable_system_auto_standby().
+
+  [CF] dev_interface: Let smart_interface::set_err() return false.
+
+  [CF] drivedb.h updates:
+       - SAMSUNG SpinPoint M8U (USB)
+       - Toshiba 3.5" HDD MKx002TSKB: Fix typo
+
+  [CF] smartctl: Print average temperature from SCT status only if
+       value is reasonable.  Field is not part of ATA-8.
+
+  [CF] smartd: Report ignored '-r' and '-R' directives.
+
+  [CF] smartctl: Use 16-bit value (ATA-8) for extended self-test polling
+       time if 8-bit value is 0xff (ticket #207).
+
+  [CF] drivedb.h updates:
+       - SandForce Driven SSDs: Add OCZ-REVODRIVE3, OCZ Z-DRIVE R4
+       - Hitachi Travelstar Z7K320
+       - Toshiba 2.5" HDD MK..56GSY
+       - Toshiba 2.5" HDD MKx002TSKB
+       - Seagate U9
+       - Seagate U*: sort entries, unify names, remove duplicate
+       - Seagate Constellation ES (SATA 6Gb/s)
+       - Seagate DB35
+       - Seagate DB35.2
+       - Western Digital Scorpio Black: Add 500GB
+       - Western Digital Scorpio Black (Adv. Format)
+
+  [CF] drivedb.h USB updates:
+       - Samsung S2 (0x04e8:0x1f05)
+       - Toshiba Stor.E (0x0939:0x0b16) (ticket #206)
+       - Seagate FreeAgent (0x0bc2:0x5040)
+       - Initio/Thermaltake BlacX (0x13fd:0x0840)
+
+  [DG] [SCSI] smartd: skip non-storage devices (e.g. SES devices)
+
+  [AS] drivedb.h updates: Added Seagate SV35 Series
+
+  [CF] smartctl: Don't start ATA self-test if another test is already
+       running (ticket #40).  Add option '-t force' to allow override.
+
+  [CF] atacmds.h: Remove bogus ataSmart*Test*() prototypes.
+
+  [CF] Define __attribute_format_printf() for functions with printf() style
+       arguments.  Allow MinGW build with __USE_MINGW_ANSI_STDIO enabled.
+
+  [CF] Makefile.am: Replace sed compound command in MAN_FILTER.
+       This fixes build on Solaris (ticket #203).
+
+  [AS] os_freebsd.cpp: Dereference symlinks before guess of device type
+       (problem reported by email).
+
+  [CF] drivedb.h USB updates:
+       - LG Mini HXD5 (0x043e:0x70f1)
+       - Freecom/Intel (0x07ab:0xfc8e)
+       - Dura Micro (0x0c0b:0xb001) (Debian bug 643928)
+       - Initio 6Y120L0 (0x13fd:0x1150): unsupported
+
+  [CF] drivedb.h USB update:
+       - Seagate FreeAgent GoFlex Desk USB 3.0 (0x0bc2:0x50a1):
+         Revert to -d sat,12 (ticket #151).
+
+  [AS] os_freebsd.cpp - fixed crash on FreeBSD9-RC1 caused by r225950
+
+  [AS] smartctl.8 - added information about -d areca on FreeBSD
+
+  [AS] os_freebsd.cpp: backport quirks for the LSI controllers with SATA
+       disks to the FreeBSD. Tested with DELL Perc/6i controller.
+
+  [AS] os_freebsd.cpp: disable SAT autodetection on megaraid controllers
+
+  [AS] drivedb.h update: 
+       - Hitachi Ultrastar 7K2000
+
+  [CF] drivedb.h update:
+       - Seagate Momentus XT: Add bug warning for firmware SD24 and SD25
+
+  [CF] Don't include pkg-config macros in aclocal.m4, copy to m4/pkg.m4
+       instead.  Allow builds from SVN without pkg-config installed
+       but prevent 'make dist' when pkg-config support is missing.
+
+  [CF] Move automake --foreign option from autogen.sh to configure.in.
+       This fixes autoreconf support.
+
+  [CF] Replace COPYING file with current (2010-03-24) version from
+       http://www.gnu.org/licenses/gpl-2.0.txt
 
 smartmontools 5.42 2011-10-20
 

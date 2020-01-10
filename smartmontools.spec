@@ -1,7 +1,7 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
-Version:	5.42
-Release:	2%{?dist}
+Version:	5.43
+Release:	1%{?dist}
 Epoch:		1
 Group:		System Environment/Base
 License:	GPLv2+
@@ -96,6 +96,9 @@ fi
 %config(noreplace) %{_sysconfdir}/sysconfig/smartmontools
 
 %changelog
+* Tue Sep 25 2012 Michal Hlavinka <mhlavink@redhat.com> - 1:5.43-1
+- smartmontools updated to 5.43 (#826144)
+
 * Mon Feb 13 2012 Michal Hlavinka <mhlavink@redhat.com> - 1:5.42-2
 - add man page for update-smart-drivedb
 

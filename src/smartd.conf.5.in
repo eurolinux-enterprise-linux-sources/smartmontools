@@ -1,7 +1,7 @@
 .ig
 Copyright (C) 2002-10 Bruce Allen <smartmontools-support@lists.sourceforge.net>
 
-$Id: smartd.conf.5.in 3445 2011-10-12 21:53:02Z chrfranke $
+$Id: smartd.conf.5.in 3566 2012-06-19 21:26:28Z chrfranke $
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the Free
@@ -53,7 +53,7 @@ running.
 In the absence of a configuration file
 \fBsmartd\fP will try to open all available devices.
 .\" %IF OS Linux
-Ubder linux will try to open the 20 ATA devices
+Under linux \fBsmartd\fP will try to open the 20 ATA devices
 .B /dev/hd[a-t] 
 and the 26 SCSI devices
 .B /dev/sd[a-z].
@@ -284,10 +284,40 @@ may optionally be followed by Directives that will apply to all
 devices that are found in the scan.  Please see below for additional
 details.
 
+[NEW EXPERIMENTAL SMARTD FEATURE] If an entry in the configuration file
+starts with
+.B DEFAULT
+instead of a device name, then all directives in this entry are set
+as defaults for the next device entries.
+
+This configuration:
+
+.nf
+\ \ DEFAULT -a -R5! -W 2,40,45 -I 194 -s L/../../7/00 -m admin@example.com
+\ \ /dev/sda
+\ \ /dev/sdb
+\ \ /dev/sdc
+\ \ DEFAULT -H -m admin@example.com
+\ \ /dev/sdd
+\ \ /dev/sde -d removable
+.fi
+
+has the same effect as:
+
+.nf
+\ \ /dev/sda -a -R5! -W 2,40,45 -I 194 -s L/../../7/00 -m admin@example.com
+\ \ /dev/sdb -a -R5! -W 2,40,45 -I 194 -s L/../../7/00 -m admin@example.com
+\ \ /dev/sdc -a -R5! -W 2,40,45 -I 194 -s L/../../7/00 -m admin@example.com
+\ \ /dev/sdd -H -m admin@example.com
+\ \ /dev/sde -d removable -H -m admin@example.com
+.fi
+
 .sp 2
 The following are the Directives that may appear following the device
 name or
 .B DEVICESCAN
+or
+.B DEFAULT
 on any line of the
 .B /usr/local/etc/smartd.conf
 configuration file. Note that
@@ -348,13 +378,18 @@ from issuing SCSI commands to an ATA device.
 \fBsmartd\fP
 from issuing ATA commands to a SCSI device.
 
-.I sat
+.I sat[,auto][,N]
 \- the device type is SCSI to ATA Translation (SAT).
 This is for ATA disks that have a SCSI to ATA Translation (SAT) Layer
 (SATL) between the disk and the operating system.
 SAT defines two ATA PASS THROUGH SCSI commands, one 12 bytes long and
 the other 16 bytes long.  The default is the 16 byte variant which can be
 overridden with either \'\-d sat,12\' or \'\-d sat,16\'.
+
+[NEW EXPERIMENTAL SMARTD FEATURE] If \'-d sat,auto\' is specified,
+device type SAT (for ATA/SATA disks) is
+only used if the SCSI INQUIRY data reports a SATL (VENDOR: "ATA     ").
+Otherwise device type SCSI (for SCSI/SAS disks) is used.
 
 .I usbcypress
 \- this device type is for ATA disks that are behind a Cypress USB to PATA
@@ -414,19 +449,27 @@ logical device corresponding to the particular physical disks.
 Please see the \fBsmartctl\fP(8) man page for further details.
 
 .\" %ENDIF OS FreeBSD Linux
-.\" %IF OS Linux FreeBSD
+.\" %IF OS FreeBSD Linux Windows Cygwin
 .I areca,N
-\- [Linux and FreeBSD only] the device consists of one or more SATA disks connected to an
-Areca SATA RAID controller.  The positive integer N (in the range from 1 to
-24 inclusive) denotes which disk on the controller is monitored.
+\- [FreeBSD, Linux, Windows and Cygwin only] the device consists of one or more SATA disks
+connected to an Areca SATA RAID controller.  The positive integer N (in the range
+from 1 to 24 inclusive) denotes which disk on the controller is monitored.
 In log files and email messages this disk will be identifed as
 areca_disk_XX with XX in the range from 01 to 24 inclusive.
 Please see the \fBsmartctl\fP(8) man page for further details.
 
-.\" %ENDIF OS Linux FreeBSD
+.I areca,N/E
+\- [FreeBSD, Linux, Windows and Cygwin only] [NEW EXPERIMENTAL SMARTD FEATURE] the
+device consists of one or more SATA disks connected to an Areca SAS RAID controller.
+The integer N (range 1 to 128) denotes the channel (slot) and E (range
+1 to 8) denotes the enclosure.
+Important: This requires upcoming Areca SAS controller firmware version 1.51 or a
+recent beta version.
+
+.\" %ENDIF OS FreeBSD Linux Windows Cygwin
 .\" %IF OS FreeBSD Linux
 .I cciss,N
-\- [FreeBSD and Linux only] the device consists of one or more SCSI/SAS disks
+\- [FreeBSD and Linux only] the device consists of one or more SCSI/SAS or SATA disks
 connected to a cciss RAID controller.  The non-negative integer N (in the range
 from 0 to 15 inclusive) denotes which disk on the controller is monitored.
 In log files and email messages this disk will be identified as cciss_disk_XX
@@ -599,25 +642,74 @@ self\-test are ignored.  The warning email counter is reset if the
 number of failed self tests dropped to 0.  This typically happens when
 an extended self\-test is run after all bad sectors have been reallocated.
 
-.I offlinests
+.I offlinests[,ns]
 \- [ATA only] report if the Offline Data Collection status has changed
 since the last check.  The report will be logged as LOG_CRIT if the new
 status indicates an error.  With some drives the status often changes,
 therefore \'\-l offlinests\' is not enabled by '\-a\' Directive.
+.\" %IF NOT OS Cygwin Windows
+.\"! Appending \',ns\' (no standby) to this directive is not implemented
+.\"! on OS_MAN_FILTER.
+.\" %ENDIF NOT OS Cygwin Windows
+.\" %IF OS Cygwin Windows
 
-.I selfteststs
+[Windows and Cygwin only] If \',ns\' (no standby) is appended to this
+directive, smartd disables system auto standby as long as an Offline
+Data Collection is in progress. See \'\-l selfteststs,ns\' below.
+.\" %ENDIF OS Cygwin Windows
+
+.I selfteststs[,ns]
 \- [ATA only] report if the Self-Test execution status has changed
 since the last check.  The report will be logged as LOG_CRIT if the new
 status indicates an error.
+.\" %IF NOT OS Cygwin Windows
+.\"! Appending \',ns\' (no standby) to this directive is not implemented
+.\"! on OS_MAN_FILTER.
+.\" %ENDIF NOT OS Cygwin Windows
+.\" %IF OS Cygwin Windows
+
+[Windows and Cygwin only] If \',ns\' (no standby) is appended to this
+directive, smartd disables system auto standby as long as a Self-Test
+is in progress.  This prevents that a Self-Test is aborted because the
+OS sets the system to a standby/sleep mode when idle.  Smartd check
+interval (\'\-i\' option) should be shorter than the configured idle
+timeout.  Auto standby is not disabled if the system is running on
+battery.
+.\" %ENDIF OS Cygwin Windows
 
 .I scterc,READTIME,WRITETIME
-\- [ATA only] [NEW EXPERIMENTAL SMARTD FEATURE] sets the SCT Error
-Recovery Control settings to the specified values (deciseconds)
-when \fBsmartd\fP starts up and has no further effect.
+\- [ATA only] sets the SCT Error Recovery Control settings to the specified
+values (deciseconds) when \fBsmartd\fP starts up and has no further effect.
 Values of 0 disable the feature, other values less than 65 are probably
 not supported.  For RAID configurations, this is typically set to
 70,70 deciseconds.
 [Please see the \fBsmartctl \-l scterc\fP command-line option.]
+
+.TP
+.B -e NAME[,VALUE]
+[NEW EXPERIMENTAL SMARTD FEATURE] Sets non\-SMART device settings
+when \fBsmartd\fP starts up and has no further effect.
+[Please see the \fBsmartctl \-\-set\fP command-line option.]
+Valid arguments are:
+
+.I aam,[N|off]
+\- [ATA only] Sets the Automatic Acoustic Management (AAM) feature.
+
+.I apm,[N|off]
+\- [ATA only] Sets the Advanced Power Management (APM) feature.
+
+.I lookahead,[on|off]
+\- [ATA only] Sets the read look-ahead feature.
+
+.I security-freeze
+\- [ATA only] Sets ATA Security feature to frozen mode.
+
+.I standby,[N|off]
+\- [ATA only] Sets the standby (spindown) timer and places the drive in the
+IDLE mode.
+
+.I wcache,[on|off]
+\- [ATA only] Sets the volatile write cache feature.
 
 .TP
 .B \-s REGEXP
@@ -641,10 +733,10 @@ The LBA range is based on the first span from the last test.
 See the \fBsmartctl \-t select,[next|redo|cont]\fP options for
 further info.
 
-[NEW EXPERIMENTAL SMARTD FEATURE] Some disks (e.g. WD) do not preserve
-the selective self test log accross power cycles.  If state persistence
-(\'\-s\' option) is enabled, the last test span is preserved by smartd
-and used if (and only if) the selective self test log is empty.
+Some disks (e.g. WD) do not preserve the selective self test log accross
+power cycles.  If state persistence (\'\-s\' option) is enabled, the last
+test span is preserved by smartd and used if (and only if) the selective
+self test log is empty.
 
 .IP \fBMM\fP 4
 is the month of the year, expressed with two decimal digits.  The
@@ -1050,13 +1142,13 @@ or age of the device has exceeded its intended design life period."
 .TP
 .B \-p
 [ATA only] Report anytime that a Prefail Attribute has changed
-its value since the last check, 30 minutes ago. [Please see the
+its value since the last check. [Please see the
 .B smartctl \-A
 command-line option.]
 .TP
 .B \-u
 [ATA only] Report anytime that a Usage Attribute has changed its value
-since the last check, 30 minutes ago. [Please see the
+since the last check. [Please see the
 .B smartctl \-A
 command-line option.]
 .TP
@@ -1208,19 +1300,19 @@ reports are disabled (\'-W 0\').
 
 To track temperature changes of at least 2 degrees, use:
 .nf
-\fB \-W 2
+.B \-W 2
 .fi
 To log informal messages on temperatures of at least 40 degrees, use:
 .nf
-\fB \-W 0,40
+.B \-W 0,40
 .fi
 For warning messages/mails on temperatures of at least 45 degrees, use:
 .nf
-\fB \-W 0,0,45
+.B \-W 0,0,45
 .fi
 To combine all of the above reports, use:
 .nf
-\fB \-W 2,40,45
+.B \-W 2,40,45
 .fi
 
 For ATA devices, smartd interprets Attribute 194 as Temperature Celsius
@@ -1491,4 +1583,4 @@ SEE ALSO:
 
 .SH
 SVN ID OF THIS PAGE:
-$Id: smartd.conf.5.in 3445 2011-10-12 21:53:02Z chrfranke $
+$Id: smartd.conf.5.in 3566 2012-06-19 21:26:28Z chrfranke $

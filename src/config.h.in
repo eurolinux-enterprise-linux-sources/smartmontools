@@ -15,6 +15,9 @@
 /* Define to 1 if C++ compiler supports __attribute__((packed)) */
 #undef HAVE_ATTR_PACKED
 
+/* Define to 1 if you have the `clock_gettime' function. */
+#undef HAVE_CLOCK_GETTIME
+
 /* Define to 1 if you have the <ddk/ntdddisk.h> header file. */
 #undef HAVE_DDK_NTDDDISK_H
 
@@ -23,6 +26,9 @@
 
 /* Define to 1 if you have the <dev/ciss/cissio.h> header file. */
 #undef HAVE_DEV_CISS_CISSIO_H
+
+/* Define to 1 if you have the `ftime' function. */
+#undef HAVE_FTIME
 
 /* Define to 1 if you have the `getaddrinfo' function. */
 #undef HAVE_GETADDRINFO
@@ -38,6 +44,9 @@
 
 /* Define to 1 if you have the `getopt_long' function. */
 #undef HAVE_GETOPT_LONG
+
+/* Define to 1 if you have the `gettimeofday' function. */
+#undef HAVE_GETTIMEOFDAY
 
 /* Define to 1 if the system has the type `int64_t'. */
 #undef HAVE_INT64_T

@@ -1,9 +1,33 @@
 smartmontools NEWS
 ------------------
-$Id: NEWS 3458 2011-10-20 19:20:23Z chrfranke $
+$Id: NEWS 3573 2012-06-30 14:03:55Z chrfranke $
 
 The most up-to-date version of this file is:
 http://smartmontools.svn.sourceforge.net/viewvc/smartmontools/trunk/smartmontools/NEWS?view=markup
+
+Date 2012-06-30
+Summary: smartmontools release 5.43
+-----------------------------------------------------------
+- smartctl options '-g, --get' and '-s, --set' to get/set
+  various ATA settings: AAM, APM, Read look-ahead, Write
+  cache, Security (freeze), Standby mode/timer.
+- smartd directive '-e' to set (most of) the above settings
+  on startup.
+- smartctl options '-f hex' and '-f hex,[id|val]'.
+- smartctl does not start ATA self-test if another test is
+  already running.  Override with new option '-t force'.
+- smartctl supports extended self-test polling times
+  greater than 255 minutes.
+- Controller-independent SAT detection: '-d sat,auto[+TYPE]'.
+- smartd.conf DEFAULT directive.
+- Many HDD, SSD and USB additions to drive database.
+- Linux and FreeBSD: Support for SATA disks behind Areca SAS
+  RAID controllers and HP Smart Array controllers.
+- Windows: Support for SATA disks behind Areca controllers.
+- Windows smartd: directives '-l offlinests,ns' and
+  '-l selfteststs,ns'.
+- Windows installer: Combined 32-/64-bit support.
+- FreeBSD: fixed crash on SCSI devices with FreeBSD9-RC1
 
 Date 2011-10-20
 Summary: smartmontools release 5.42

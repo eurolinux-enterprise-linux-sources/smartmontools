@@ -1,27 +1,21 @@
-diff -up smartmontools-5.42/smartctl.8.in.ccissman smartmontools-5.42/smartctl.8.in
---- smartmontools-5.42/smartctl.8.in.ccissman	2012-02-13 11:08:46.000000000 +0100
-+++ smartmontools-5.42/smartctl.8.in	2012-02-13 11:25:07.217623142 +0100
-@@ -464,6 +464,23 @@ from 0 to 15 inclusive) denotes which di
- If the controller firmware or driver provides a SAT Layer it may be possible
- to monitor also SATA disks by specifiying \'\-d sat+cciss,N\'.
- 
-+If you are using the cciss driver, use syntax such as:
-+.nf
-+\fBsmartctl \-a \-d cciss,0 /dev/cciss/c0d0\fP
-+.fi
+diff -up smartmontools-5.43/smartctl.8.in.ccissman smartmontools-5.43/smartctl.8.in
+--- smartmontools-5.43/smartctl.8.in.ccissman	2012-09-25 17:51:25.000000000 +0200
++++ smartmontools-5.43/smartctl.8.in	2012-09-25 17:59:16.502276071 +0200
+@@ -527,9 +527,16 @@ such as:
+ .nf
+ \fBsmartctl \-a \-d cciss,0 /dev/cciss/c0d0\fP    (cciss driver under Linux)
+ .fi
 +This will give the smart information about the first physical disk drive (0)
 +connect to the controller at /dev/cciss/c0d0 . (Disk drive numbering is 0
 +based)
-+
-+If you are using the hpsa driver, use syntax such as:
-+.nf
-+\fBsmartctl \-a \-d cciss,1 /dev/sg0\fP
-+.fi
+ .nf
+-\fBsmartctl \-a \-d cciss,0 /dev/sg2\fP    (hpsa or hpahcisr drivers under Linux)
++\fBsmartctl \-a \-d cciss,1 /dev/sg2\fP    (hpsa or hpahcisr drivers under Linux)
+ .fi
 +This will give the SMART information about the second physical disk drive (1)
 +connected to the controller at /dev/sg0
 +
 +To get the controller device node you will need to run \fBlsscsi \-g\fP.
-+
- .I hpt,L/M/N
- \- [FreeBSD and Linux only] the device consists of one or more ATA disks
- connected to a HighPoint RocketRAID controller.  The integer L is the
+ .\" %ENDIF OS Linux
+ .\" %IF OS FreeBSD
+ .nf

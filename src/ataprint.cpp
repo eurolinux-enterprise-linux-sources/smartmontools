@@ -4,7 +4,7 @@
  * Home page of code is: http://smartmontools.sourceforge.net
  *
  * Copyright (C) 2002-11 Bruce Allen <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2008-11 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2008-12 Christian Franke <smartmontools-support@lists.sourceforge.net>
  * Copyright (C) 1999-2000 Michael Cornwell <cornwell@acm.org>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -40,7 +40,7 @@
 #include "utility.h"
 #include "knowndrives.h"
 
-const char * ataprint_cpp_cvsid = "$Id: ataprint.cpp 3438 2011-10-11 21:36:27Z chrfranke $"
+const char * ataprint_cpp_cvsid = "$Id: ataprint.cpp 3554 2012-06-01 20:11:46Z chrfranke $"
                                   ATAPRINT_H_CVSID;
 
 
@@ -754,7 +754,7 @@ static void PrintSmartExtendedSelfTestPollingTime(const ata_smart_values * data)
   pout("Extended self-test routine\n");
   if (isSupportSelfTest(data))
     pout("recommended polling time: \t (%4d) minutes.\n", 
-         (int)data->extend_test_completion_time);
+         TestTime(data, EXTEND_SELF_TEST));
   else
     pout("recommended polling time: \t        Not Supported.\n");
 }
@@ -801,6 +801,9 @@ static void PrintSmartAttribWithThres(const ata_smart_values * data,
                                       const ata_vendor_attr_defs & defs,
                                       int onlyfailed, unsigned char format)
 {
+  bool brief  = !!(format & ata_print_options::FMT_BRIEF);
+  bool hexid  = !!(format & ata_print_options::FMT_HEX_ID);
+  bool hexval = !!(format & ata_print_options::FMT_HEX_VAL);
   bool needheader = true;
 
   // step through all vendor attributes
@@ -826,35 +829,42 @@ static void PrintSmartAttribWithThres(const ata_smart_values * data,
         pout("SMART Attributes Data Structure revision number: %d\n",(int)data->revnumber);
         pout("Vendor Specific SMART Attributes with Thresholds:\n");
       }
-      if (format == 0)
-        pout("ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE\n");
+      if (!brief)
+        pout("ID#%s ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE\n",
+             (!hexid ? "" : " "));
       else
-        pout("ID# ATTRIBUTE_NAME          FLAGS    VALUE WORST THRESH FAIL RAW_VALUE\n");
+        pout("ID#%s ATTRIBUTE_NAME          FLAGS    VALUE WORST THRESH FAIL RAW_VALUE\n",
+             (!hexid ? "" : " "));
       needheader = false;
     }
 
     // Format value, worst, threshold
     std::string valstr, worstr, threstr;
     if (state > ATTRSTATE_NO_NORMVAL)
-      valstr = strprintf("%.3d", attr.current);
+      valstr = (!hexval ? strprintf("%.3d",   attr.current)
+                        : strprintf("0x%02x", attr.current));
     else
-      valstr = "---";
+      valstr = (!hexval ? "---" : "----");
     if (!(defs[attr.id].flags & ATTRFLAG_NO_WORSTVAL))
-      worstr = strprintf("%.3d", attr.worst);
+      worstr = (!hexval ? strprintf("%.3d",   attr.worst)
+                        : strprintf("0x%02x", attr.worst));
     else
-      worstr = "---";
+      worstr = (!hexval ? "---" : "----");
     if (state > ATTRSTATE_NO_THRESHOLD)
-      threstr = strprintf("%.3d", threshold);
+      threstr = (!hexval ? strprintf("%.3d",   threshold)
+                         : strprintf("0x%02x", threshold));
     else
-      threstr = "---";
+      threstr = (!hexval ? "---" : "----");
 
     // Print line for each valid attribute
+    std::string idstr = (!hexid ? strprintf("%3d",    attr.id)
+                                : strprintf("0x%02x", attr.id));
     std::string attrname = ata_get_smart_attr_name(attr.id, defs);
     std::string rawstr = ata_format_attr_raw_value(attr, defs);
 
-    if (format == 0)
-      pout("%3d %-24s0x%04x   %-3s   %-3s   %-3s    %-10s%-9s%-12s%s\n",
-           attr.id, attrname.c_str(), attr.flags,
+    if (!brief)
+      pout("%s %-24s0x%04x   %-4s  %-4s  %-4s   %-10s%-9s%-12s%s\n",
+           idstr.c_str(), attrname.c_str(), attr.flags,
            valstr.c_str(), worstr.c_str(), threstr.c_str(),
            (ATTRIBUTE_FLAGS_PREFAILURE(attr.flags) ? "Pre-fail" : "Old_age"),
            (ATTRIBUTE_FLAGS_ONLINE(attr.flags)     ? "Always"   : "Offline"),
@@ -863,8 +873,8 @@ static void PrintSmartAttribWithThres(const ata_smart_values * data,
                                            : "    -"        ) ,
             rawstr.c_str());
     else
-      pout("%3d %-24s%c%c%c%c%c%c%c  %-3s   %-3s   %-3s    %-5s%s\n",
-           attr.id, attrname.c_str(),
+      pout("%s %-24s%c%c%c%c%c%c%c  %-4s  %-4s  %-4s   %-5s%s\n",
+           idstr.c_str(), attrname.c_str(),
            (ATTRIBUTE_FLAGS_PREFAILURE(attr.flags)     ? 'P' : '-'),
            (ATTRIBUTE_FLAGS_ONLINE(attr.flags)         ? 'O' : '-'),
            (ATTRIBUTE_FLAGS_PERFORMANCE(attr.flags)    ? 'S' : '-'),
@@ -881,14 +891,16 @@ static void PrintSmartAttribWithThres(const ata_smart_values * data,
   }
 
   if (!needheader) {
-    if (!onlyfailed && format == 1)
-      pout("%28s||||||_ K auto-keep\n"
-           "%28s|||||__ C event count\n"
-           "%28s||||___ R error rate\n"
-           "%28s|||____ S speed/performance\n"
-           "%28s||_____ O updated online\n"
-           "%28s|______ P prefailure warning\n",
-           "", "", "", "", "", "");
+    if (!onlyfailed && brief) {
+        int n = (!hexid ? 28 : 29);
+        pout("%*s||||||_ K auto-keep\n"
+             "%*s|||||__ C event count\n"
+             "%*s||||___ R error rate\n"
+             "%*s|||____ S speed/performance\n"
+             "%*s||_____ O updated online\n"
+             "%*s|______ P prefailure warning\n",
+             n, "", n, "", n, "", n, "", n, "", n, "");
+    }
     pout("\n");
   }
 }
@@ -959,7 +971,7 @@ static unsigned GetNumLogSectors(const ata_smart_log_directory * logdir, unsigne
 }
 
 // Get name of log.
-// Table A.2 of T13/2161-D Revision 1 (ACS-3), August 13, 2011.
+// Table A.2 of T13/2161-D Revision 2 (ACS-3), February 21, 2012.
 static const char * GetLogName(unsigned logaddr)
 {
     switch (logaddr) {
@@ -976,11 +988,18 @@ static const char * GetLogName(unsigned logaddr)
       case 0x0d: return "LPS Mis-alignment log"; // ACS-2
       case 0x10: return "NCQ Command Error log";
       case 0x11: return "SATA Phy Event Counters";
+      case 0x12: return "SATA NCQ Queue Management log"; // ACS-3
+      case 0x13: return "SATA NCQ Send and Receive log"; // ACS-3
+      case 0x14:
+      case 0x15:
+      case 0x16: return "Reserved for Serial ATA";
       case 0x19: return "LBA Status log"; // ACS-3
       case 0x20: return "Streaming performance log"; // Obsolete
       case 0x21: return "Write stream error log";
       case 0x22: return "Read stream error log";
       case 0x23: return "Delayed sector log"; // Obsolete
+      case 0x24: return "Current Device Internal Status Data log"; // ACS-3
+      case 0x25: return "Saved Device Internal Status Data log"; // ACS-3
       case 0x30: return "IDENTIFY DEVICE data log"; // ACS-3
       case 0xe0: return "SCT Command/Status";
       case 0xe1: return "SCT Data Transfer";
@@ -989,8 +1008,6 @@ static const char * GetLogName(unsigned logaddr)
           return "Device vendor specific log";
         if (0x80 <= logaddr && logaddr <= 0x9f)
           return "Host vendor specific log";
-        if (0x12 <= logaddr && logaddr <= 0x17)
-          return "Reserved for Serial ATA";
         return "Reserved";
     }
     /*NOTREACHED*/
@@ -1063,7 +1080,7 @@ static void PrintLogPages(const char * type, const unsigned char * data,
 
 // See Section A.5 of
 //   ATA/ATAPI Command Set - 3 (ACS-3)
-//   T13/2161-D Revision 1, August 13, 2011
+//   T13/2161-D Revision 2, February 21, 2012.
 
 struct devstat_entry_info
 {
@@ -1084,11 +1101,12 @@ const devstat_entry_info devstat_info_0x01[] = {
   {  6, "Number of Write Commands" },
   {  6, "Logical Sectors Read" },
   {  6, "Number of Read Commands" },
+  {  6, "Date and Time TimeStamp" }, // ACS-3
   {  0, 0 }
 };
 
 const devstat_entry_info devstat_info_0x02[] = {
-  {  2, "Freefall Statistics" },
+  {  2, "Free-Fall Statistics" },
   {  4, "Number of Free-Fall Events Detected" },
   {  4, "Overlimit Shock Events" },
   {  0, 0 }
@@ -1904,11 +1922,11 @@ static int ataPrintSCTStatus(const ata_sct_status_response * sts)
   pout("Device State:                        %s (%u)\n",
     sct_device_state_msg(sts->device_state), sts->device_state);
   char buf1[20], buf2[20];
-  if (   !sts->min_temp && !sts->life_min_temp && !sts->byte205
-      && !sts->under_limit_count && !sts->over_limit_count     ) {
+  if (   !sts->min_temp && !sts->life_min_temp
+      && !sts->under_limit_count && !sts->over_limit_count) {
     // "Reserved" fields not set, assume "old" format version 2
-    // Table 11 of T13/1701DT Revision 5
-    // Table 54 of T13/1699-D Revision 3e
+    // Table 11 of T13/1701DT-N (SMART Command Transport) Revision 5, February 2005
+    // Table 54 of T13/1699-D (ATA8-ACS) Revision 3e, July 2006
     pout("Current Temperature:                 %s Celsius\n",
       sct_ptemp(sts->hda_temp, buf1));
     pout("Power Cycle Max Temperature:         %s Celsius\n",
@@ -1918,17 +1936,18 @@ static int ataPrintSCTStatus(const ata_sct_status_response * sts)
   }
   else {
     // Assume "new" format version 2 or version 3
-    // T13/e06152r0-3 (Additional SCT Temperature Statistics)
-    // Table 60 of T13/1699-D Revision 3f
+    // T13/e06152r0-3 (Additional SCT Temperature Statistics), August - October 2006
+    // Table 60 of T13/1699-D (ATA8-ACS) Revision 3f, December 2006  (format version 2)
+    // Table 80 of T13/1699-D (ATA8-ACS) Revision 6a, September 2008 (format version 3)
     pout("Current Temperature:                    %s Celsius\n",
       sct_ptemp(sts->hda_temp, buf1));
     pout("Power Cycle Min/Max Temperature:     %s/%s Celsius\n",
       sct_ptemp(sts->min_temp, buf1), sct_ptemp(sts->max_temp, buf2));
     pout("Lifetime    Min/Max Temperature:     %s/%s Celsius\n",
       sct_ptemp(sts->life_min_temp, buf1), sct_ptemp(sts->life_max_temp, buf2));
-    if (sts->byte205) // e06152r0-2, removed in e06152r3
-      pout("Lifetime    Average Temperature:        %s Celsius\n",
-        sct_ptemp((signed char)sts->byte205, buf1));
+    signed char avg = sts->byte205; // Average Temperature from e06152r0-2, removed in e06152r3
+    if (0 < avg && sts->life_min_temp <= avg && avg <= sts->life_max_temp)
+      pout("Lifetime    Average Temperature:        %2d Celsius\n", avg);
     pout("Under/Over Temperature Limit Count:  %2u/%u\n",
       sts->under_limit_count, sts->over_limit_count);
   }
@@ -2001,6 +2020,121 @@ static void ataPrintSCTErrorRecoveryControl(bool set, unsigned short read_timer,
     pout("          Write: %6d (%0.1f seconds)\n", write_timer, write_timer/10.0);
 }
 
+static void print_aam_level(const char * msg, int level, int recommended = -1)
+{
+  // Table 56 of T13/1699-D (ATA8-ACS) Revision 6a, September 6, 2008
+  // Obsolete since T13/2015-D (ACS-2) Revision 4a, December 9, 2010
+  const char * s;
+  if (level == 0)
+    s = "vendor specific";
+  else if (level < 128)
+    s = "unknown/retired";
+  else if (level == 128)
+    s = "quiet";
+  else if (level < 254)
+    s = "intermediate";
+  else if (level == 254)
+    s = "maximum performance";
+  else
+    s = "reserved";
+
+  if (recommended >= 0)
+    pout("%s%d (%s), recommended: %d\n", msg, level, s, recommended);
+  else
+    pout("%s%d (%s)\n", msg, level, s);
+}
+
+static void print_apm_level(const char * msg, int level)
+{
+  // Table 120 of T13/2015-D (ACS-2) Revision 7, June 22, 2011
+  const char * s;
+  if (!(1 <= level && level <= 254))
+    s = "reserved";
+  else if (level == 1)
+    s = "minimum power consumption with standby";
+  else if (level < 128)
+    s = "intermediate level with standby";
+  else if (level == 128)
+    s = "minimum power consumption without standby";
+  else if (level < 254)
+    s = "intermediate level without standby";
+  else
+    s = "maximum performance";
+
+  pout("%s%d (%s)\n", msg, level, s);
+}
+
+static void print_ata_security_status(const char * msg, unsigned short state)
+{
+    const char * s1, * s2 = "", * s3 = "", * s4 = "";
+
+    // Table 6 of T13/2015-D (ACS-2) Revision 7, June 22, 2011
+    if (!(state & 0x0001))
+      s1 = "Unavailable";
+    else if (!(state & 0x0002)) {
+      s1 = "Disabled, ";
+      if (!(state & 0x0008))
+        s2 = "NOT FROZEN [SEC1]";
+      else
+        s2 = "frozen [SEC2]";
+    }
+    else {
+      s1 = "ENABLED, PW level ";
+      if (!(state & 0x0020))
+        s2 = "HIGH";
+      else
+        s2 = "MAX";
+
+      if (!(state & 0x0004)) {
+         s3 = ", not locked, ";
+        if (!(state & 0x0008))
+          s4 = "not frozen [SEC5]";
+        else
+          s4 = "frozen [SEC6]";
+      }
+      else {
+        s3 = ", **LOCKED** [SEC4]";
+        if (state & 0x0010)
+          s4 = ", PW ATTEMPTS EXCEEDED";
+      }
+    }
+
+    pout("%s%s%s%s%s\n", msg, s1, s2, s3, s4);
+}
+
+static void print_standby_timer(const char * msg, int timer, const ata_identify_device & drive)
+{
+  const char * s1 = 0;
+  int hours = 0, minutes = 0 , seconds = 0;
+
+  // Table 63 of T13/2015-D (ACS-2) Revision 7, June 22, 2011
+  if (timer == 0)
+    s1 = "disabled";
+  else if (timer <= 240)
+    seconds = timer * 5, minutes = seconds / 60, seconds %= 60;
+  else if (timer <= 251)
+    minutes = (timer - 240) * 30, hours = minutes / 60, minutes %= 60;
+  else if (timer == 252)
+    minutes = 21;
+  else if (timer == 253)
+    s1 = "between 8 hours and 12 hours";
+  else if (timer == 255)
+    minutes = 21, seconds = 15;
+  else
+    s1 = "reserved";
+
+  const char * s2 = "", * s3 = "";
+  if (!(drive.words047_079[49-47] & 0x2000))
+    s2 = " or vendor-specific";
+  if (timer > 0 && (drive.words047_079[50-47] & 0xc001) == 0x4001)
+    s3 = ", a vendor-specific minimum applies";
+
+  if (s1)
+    pout("%s%d (%s%s%s)\n", msg, timer, s1, s2, s3);
+  else
+    pout("%s%d (%02d:%02d:%02d%s%s)\n", msg, timer, hours, minutes, seconds, s2, s3);
+}
+
 
 int ataPrintMain (ata_device * device, const ata_print_options & options)
 {
@@ -2012,7 +2146,7 @@ int ataPrintMain (ata_device * device, const ata_print_options & options)
     int powermode = ataCheckPowerMode(device);
     switch (powermode) {
       case -1:
-        if (device->get_errno() == ENOSYS) {
+        if (device->is_syscall_unsup()) {
           pout("CHECK POWER MODE not implemented, ignoring -n option\n"); break;
         }
         powername = "SLEEP";   powerlimit = 2;
@@ -2098,7 +2232,7 @@ int ataPrintMain (ata_device * device, const ata_print_options & options)
   // Exit if no further options specified
   if (!(   options.drive_info || need_smart_support
         || need_smart_logdir  || need_gp_logdir
-        || need_sct_support                        )) {
+        || need_sct_support || options.get_set_used)) {
     if (powername)
       pout("Device is in %s mode\n", powername);
     else
@@ -2198,6 +2332,47 @@ int ataPrintMain (ata_device * device, const ata_print_options & options)
     }
   }
 
+  // Print AAM status
+  if (options.get_aam) {
+    if ((drive.command_set_2 & 0xc200) != 0x4200) // word083
+      pout("AAM feature is:   Unavailable\n");
+    else if (!(drive.word086 & 0x0200))
+      pout("AAM feature is:   Disabled\n");
+    else
+      print_aam_level("AAM level is:     ", drive.words088_255[94-88] & 0xff,
+        drive.words088_255[94-88] >> 8);
+  }
+
+  // Print APM status
+  if (options.get_apm) {
+    if ((drive.command_set_2 & 0xc008) != 0x4008) // word083
+      pout("APM feature is:   Unavailable\n");
+    else if (!(drive.word086 & 0x0008))
+      pout("APM feature is:   Disabled\n");
+    else
+      print_apm_level("APM level is:     ", drive.words088_255[91-88] & 0xff);
+  }
+
+  // Print read look-ahead status
+  if (options.get_lookahead) {
+    pout("Rd look-ahead is: %s\n",
+      (   (drive.command_set_2 & 0xc000) != 0x4000 // word083
+       || !(drive.command_set_1 & 0x0040)) ? "Unavailable" : // word082
+       !(drive.cfs_enable_1 & 0x0040) ? "Disabled" : "Enabled"); // word085
+  }
+
+  // Print write cache status
+  if (options.get_wcache) {
+    pout("Write cache is:   %s\n",
+      (   (drive.command_set_2 & 0xc000) != 0x4000 // word083
+       || !(drive.command_set_1 & 0x0020)) ? "Unavailable" : // word082
+       !(drive.cfs_enable_1 & 0x0020) ? "Disabled" : "Enabled"); // word085
+  }
+
+  // Print ATA security status
+  if (options.get_security)
+    print_ata_security_status("ATA Security is:  ", drive.words088_255[128-88]);
+
   // Print remaining drive info
   if (options.drive_info) {
     // Print the (now possibly changed) power mode if available
@@ -2216,6 +2391,88 @@ int ataPrintMain (ata_device * device, const ata_print_options & options)
       || options.smart_auto_offl_disable || options.smart_auto_offl_enable)
     pout("=== START OF ENABLE/DISABLE COMMANDS SECTION ===\n");
   
+  // Enable/Disable AAM
+  if (options.set_aam) {
+    if (options.set_aam > 0) {
+      if (!ata_set_features(device, ATA_ENABLE_AAM, options.set_aam-1)) {
+        pout("AAM enable failed: %s\n", device->get_errmsg());
+        returnval |= FAILSMART;
+      }
+      else
+        print_aam_level("AAM set to level ", options.set_aam-1);
+    }
+    else {
+      if (!ata_set_features(device, ATA_DISABLE_AAM)) {
+        pout("AAM disable failed: %s\n", device->get_errmsg());
+        returnval |= FAILSMART;
+      }
+      else
+        pout("AAM disabled\n");
+    }
+  }
+
+  // Enable/Disable APM
+  if (options.set_apm) {
+    if (options.set_apm > 0) {
+      if (!ata_set_features(device, ATA_ENABLE_APM, options.set_apm-1)) {
+        pout("APM enable failed: %s\n", device->get_errmsg());
+        returnval |= FAILSMART;
+      }
+      else
+        print_apm_level("APM set to level ", options.set_apm-1);
+    }
+    else {
+      if (!ata_set_features(device, ATA_DISABLE_APM)) {
+        pout("APM disable failed: %s\n", device->get_errmsg());
+        returnval |= FAILSMART;
+      }
+      else
+        pout("APM disabled\n");
+    }
+  }
+
+  // Enable/Disable read look-ahead
+  if (options.set_lookahead) {
+    bool enable = (options.set_lookahead > 0);
+    if (!ata_set_features(device, (enable ? ATA_ENABLE_READ_LOOK_AHEAD : ATA_DISABLE_READ_LOOK_AHEAD))) {
+        pout("Read look-ahead %sable failed: %s\n", (enable ? "en" : "dis"), device->get_errmsg());
+        returnval |= FAILSMART;
+    }
+    else
+      pout("Read look-ahead %sabled\n", (enable ? "en" : "dis"));
+  }
+
+  // Enable/Disable write cache
+  if (options.set_wcache) {
+    bool enable = (options.set_wcache > 0);
+    if (!ata_set_features(device, (enable ? ATA_ENABLE_WRITE_CACHE : ATA_DISABLE_WRITE_CACHE))) {
+        pout("Write cache %sable failed: %s\n", (enable ? "en" : "dis"), device->get_errmsg());
+        returnval |= FAILSMART;
+    }
+    else
+      pout("Write cache %sabled\n", (enable ? "en" : "dis"));
+  }
+
+  // Freeze ATA security
+  if (options.set_security_freeze) {
+    if (!ata_nodata_command(device, ATA_SECURITY_FREEZE_LOCK)) {
+        pout("ATA SECURITY FREEZE LOCK failed: %s\n", device->get_errmsg());
+        returnval |= FAILSMART;
+    }
+    else
+      pout("ATA Security set to frozen mode\n");
+  }
+
+  // Set standby timer
+  if (options.set_standby) {
+    if (!ata_nodata_command(device, ATA_IDLE, options.set_standby-1)) {
+        pout("ATA IDLE command failed: %s\n", device->get_errmsg());
+        returnval |= FAILSMART;
+    }
+    else
+      print_standby_timer("Standby timer set to ", options.set_standby-1, drive);
+  }
+
   // Enable/Disable SMART commands
   if (options.smart_enable) {
     if (ataEnableSmart(device)) {
@@ -2781,6 +3038,17 @@ int ataPrintMain (ata_device * device, const ata_print_options & options)
     }
   }
 
+  // Set to standby (spindown) mode
+  // (Above commands may spinup drive)
+  if (options.set_standby_now) {
+    if (!ata_nodata_command(device, ATA_STANDBY_IMMEDIATE)) {
+        pout("ATA STANDBY IMMEDIATE command failed: %s\n", device->get_errmsg());
+        returnval |= FAILSMART;
+    }
+    else
+      pout("Device placed in STANDBY mode\n");
+  }
+
   // START OF THE TESTING SECTION OF THE CODE.  IF NO TESTING, RETURN
   if (!smart_val_ok || options.smart_selftest_type == -1)
     return returnval;
@@ -2824,8 +3092,8 @@ int ataPrintMain (ata_device * device, const ata_print_options & options)
 
   // Now do the test.  Note ataSmartTest prints its own error/success
   // messages
-  if (ataSmartTest(device, options.smart_selftest_type, options.smart_selective_args,
-                   &smartval, sizes.sectors                                          ))
+  if (ataSmartTest(device, options.smart_selftest_type, options.smart_selftest_force,
+                   options.smart_selective_args, &smartval, sizes.sectors            ))
     failuretest(OPTIONAL_CMD, returnval|=FAILSMART);
   else {  
     // Tell user how long test will take to complete.  This is tricky
