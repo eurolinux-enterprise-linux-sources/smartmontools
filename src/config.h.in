@@ -1,16 +1,22 @@
 /* config.h.in.  Generated from configure.in by autoheader.  */
 
+/* Define if building universal (internal helper macro) */
+#undef AC_APPLE_UNIVERSAL_BUILD
+
+/* freebsd ciss header location */
+#undef CISS_LOCATION
+
 /* smartmontools CVS Tag */
 #undef CONFIG_H_CVSID
 
-/* use mailx as default mailer */
+/* Default mailer if "mail" is unavailable */
 #undef DEFAULT_MAILER
-
-/* Define to 1 if you have the `ata_identify_is_cached' function in os_*.c. */
-#undef HAVE_ATA_IDENTIFY_IS_CACHED
 
 /* Define to 1 if C++ compiler supports __attribute__((packed)) */
 #undef HAVE_ATTR_PACKED
+
+/* Define to 1 if you have the <ddk/ntdddisk.h> header file. */
+#undef HAVE_DDK_NTDDDISK_H
 
 /* Define to 1 if you have the <dev/ata/atavar.h> header file. */
 #undef HAVE_DEV_ATA_ATAVAR_H
@@ -33,14 +39,17 @@
 /* Define to 1 if you have the `getopt_long' function. */
 #undef HAVE_GETOPT_LONG
 
-/* Define to 1 if you have the `get_os_version_str' function in os_*.c. */
-#undef HAVE_GET_OS_VERSION_STR
-
 /* Define to 1 if the system has the type `int64_t'. */
 #undef HAVE_INT64_T
 
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
+
+/* Define to 1 if you have the `cap-ng' library (-lcap-ng). */
+#undef HAVE_LIBCAP_NG
+
+/* Define to 1 if you have the `selinux' library (-lselinux). */
+#undef HAVE_LIBSELINUX
 
 /* Define to 1 if you have the `usb' library (-lusb). */
 #undef HAVE_LIBUSB
@@ -59,6 +68,12 @@
 
 /* Define to 1 if you have the <netdb.h> header file. */
 #undef HAVE_NETDB_H
+
+/* Define to 1 if you have the <ntdddisk.h> header file. */
+#undef HAVE_NTDDDISK_H
+
+/* Define to 1 if you have the `regcomp' function. */
+#undef HAVE_REGCOMP
 
 /* Define to 1 if you have the <selinux/selinux.h> header file. */
 #undef HAVE_SELINUX_SELINUX_H
@@ -111,11 +126,11 @@
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
 
+/* Define to 1 if you have the <wbemcli.h> header file. */
+#undef HAVE_WBEMCLI_H
+
 /* Define to 1 if the `snprintf' function is sane */
 #undef HAVE_WORKING_SNPRINTF
-
-/* need assembly code os_solaris_ata.s */
-#undef NEED_SOLARIS_ATA_CODE
 
 /* Define to 1 if os_*.cpp still uses the old interface */
 #undef OLD_INTERFACE
@@ -167,3 +182,15 @@
 
 /* Define to 1 if SELinux support is enabled */
 #undef WITH_SELINUX
+
+/* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
+   significant byte first (like Motorola and SPARC, unlike Intel). */
+#if defined AC_APPLE_UNIVERSAL_BUILD
+# if defined __BIG_ENDIAN__
+#  define WORDS_BIGENDIAN 1
+# endif
+#else
+# ifndef WORDS_BIGENDIAN
+#  undef WORDS_BIGENDIAN
+# endif
+#endif

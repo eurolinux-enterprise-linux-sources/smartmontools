@@ -3,8 +3,8 @@
  *
  * Home page of code is: http://smartmontools.sourceforge.net
  *
- * Copyright (C) 2002-10 Bruce Allen <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2008-10 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2002-11 Bruce Allen <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2008-11 Christian Franke <smartmontools-support@lists.sourceforge.net>
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -49,26 +49,26 @@
 #include "atacmds.h"
 #include "dev_interface.h"
 #include "ataprint.h"
-#include "extern.h"
 #include "knowndrives.h"
 #include "scsicmds.h"
 #include "scsiprint.h"
 #include "smartctl.h"
 #include "utility.h"
 
-const char * smartctl_cpp_cvsid = "$Id: smartctl.cpp 3046 2010-01-22 21:30:02Z chrfranke $"
-                                  CONFIG_H_CVSID EXTERN_H_CVSID SMARTCTL_H_CVSID;
+const char * smartctl_cpp_cvsid = "$Id: smartctl.cpp 3443 2011-10-12 20:43:04Z chrfranke $"
+  CONFIG_H_CVSID SMARTCTL_H_CVSID;
 
-// This is a block containing all the "control variables".  We declare
-// this globally in this file, and externally in other files.
-smartmonctrl *con=NULL;
+// Globals to control printing
+bool printing_is_switchable = false;
+bool printing_is_off = false;
 
 static void printslogan()
 {
   pout("%s\n", format_version_info("smartctl").c_str());
 }
 
-void UsageSummary(){
+static void UsageSummary()
+{
   pout("\nUse smartctl -h to get a usage summary\n\n");
   return;
 }
@@ -76,7 +76,8 @@ void UsageSummary(){
 static std::string getvalidarglist(char opt);
 
 /*  void prints help information for command syntax */
-void Usage (void){
+static void Usage()
+{
   printf("Usage: smartctl [options] device\n\n");
   printf(
 "============================================ SHOW INFORMATION OPTIONS =====\n\n"
@@ -90,6 +91,10 @@ void Usage (void){
 "         Show all SMART information for device\n\n"
 "  -x, --xall\n"
 "         Show all information for device\n\n"
+"  --scan\n"
+"         Scan for devices\n\n"
+"  --scan-open\n"
+"         Scan for devices and try to open each device\n\n"
   );
   printf(
 "================================== SMARTCTL RUN-TIME BEHAVIOR OPTIONS =====\n\n"
@@ -121,14 +126,17 @@ void Usage (void){
 "        Show device SMART health status\n\n"
 "  -c, --capabilities                                                  (ATA)\n"
 "        Show device SMART capabilities\n\n"
-"  -A, --attributes                                                         \n"
+"  -A, --attributes\n"
 "        Show device SMART vendor-specific Attributes and values\n\n"
+"  -f FORMAT, --format=FORMAT                                          (ATA)\n"
+"        Set output format for attributes to one of: old, brief\n\n"
 "  -l TYPE, --log=TYPE\n"
 "        Show device log. TYPE: error, selftest, selective, directory[,g|s],\n"
+"                               xerror[,N][,error], xselftest[,N][,selftest],\n"
 "                               background, sasphy[,reset], sataphy[,reset],\n"
-"                               scttemp[sts,hist],\n"
-"                               gplog,N[,RANGE], smartlog,N[,RANGE],\n"
-"                               xerror[,N][,error], xselftest[,N][,selftest]\n\n"
+"                               scttemp[sts,hist], scttempint,N[,p],\n"
+"                               scterc[,N,M], devstat[,N], ssd,\n"
+"                               gplog,N[,RANGE], smartlog,N[,RANGE]\n\n"
 "  -v N,OPTION , --vendorattribute=N,OPTION                            (ATA)\n"
 "        Set display OPTION for vendor Attribute N (see man page)\n\n"
 "  -F TYPE, --firmwarebug=TYPE                                         (ATA)\n"
@@ -138,16 +146,22 @@ void Usage (void){
 "        Drive-specific presets: use, ignore, show, showall\n\n"
 "  -B [+]FILE, --drivedb=[+]FILE                                       (ATA)\n"
 "        Read and replace [add] drive database from FILE\n"
-#ifdef SMARTMONTOOLS_DRIVEDBDIR
-"        [default is "SMARTMONTOOLS_DRIVEDBDIR"/drivedb.h]\n"
-#endif
-"\n"
+"        [default is +%s",
+    get_drivedb_path_add()
   );
+#ifdef SMARTMONTOOLS_DRIVEDBDIR
   printf(
+                      "\n"
+"         and then    %s",
+    get_drivedb_path_default()
+  );
+#endif
+  printf(
+         "]\n\n"
 "============================================ DEVICE SELF-TEST OPTIONS =====\n\n"
 "  -t TEST, --test=TEST\n"
-"        Run test. TEST: offline short long conveyance select,M-N\n"
-"                        pending,N afterselect,[on|off] scttempint,N[,p]\n\n"
+"        Run test. TEST: offline, short, long, conveyance, vendor,N,\n"
+"                        select,M-N, pending,N, afterselect,[on|off]\n\n"
 "  -C, --captive\n"
 "        Do test in captive mode (along with -t)\n\n"
 "  -X, --abort\n"
@@ -166,7 +180,7 @@ static std::string getvalidarglist(char opt)
   case 'q':
     return "errorsonly, silent, noserial";
   case 'd':
-    return smi()->get_valid_dev_types_str() + ", test";
+    return smi()->get_valid_dev_types_str() + ", auto, test";
   case 'T':
     return "normal, conservative, permissive, verypermissive";
   case 'b':
@@ -178,17 +192,24 @@ static std::string getvalidarglist(char opt)
   case 'S':
     return "on, off";
   case 'l':
-    return "error, selftest, selective, directory[,g|s], background, scttemp[sts|hist], "
-           "sasphy[,reset], sataphy[,reset], gplog,N[,RANGE], smartlog,N[,RANGE], "
-	   "xerror[,N][,error], xselftest[,N][,selftest]";
+    return "error, selftest, selective, directory[,g|s], "
+           "xerror[,N][,error], xselftest[,N][,selftest], "
+           "background, sasphy[,reset], sataphy[,reset], "
+           "scttemp[sts,hist], scttempint,N[,p], "
+           "scterc[,N,M], devstat[,N], ssd, "
+           "gplog,N[,RANGE], smartlog,N[,RANGE]";
+
   case 'P':
     return "use, ignore, show, showall";
   case 't':
-    return "offline, short, long, conveyance, select,M-N, pending,N, afterselect,[on|off], scttempint,N[,p]";
+    return "offline, short, long, conveyance, vendor,N, select,M-N, "
+           "pending,N, afterselect,[on|off]";
   case 'F':
     return "none, samsung, samsung2, samsung3, swapid";
   case 'n':
     return "never, sleep, standby, idle";
+  case 'f':
+    return "old, brief";
   case 'v':
   default:
     return "";
@@ -197,8 +218,8 @@ static std::string getvalidarglist(char opt)
 
 /* Prints the message "=======> VALID ARGUMENTS ARE: <LIST> \n", where
    <LIST> is the list of valid arguments for option opt. */
-void printvalidarglistmessage(char opt) {
- 
+static void printvalidarglistmessage(char opt)
+{
   if (opt=='v'){
     pout("=======> VALID ARGUMENTS ARE:\n\thelp\n%s\n<=======\n",
          create_vendor_attribute_arg_list().c_str());
@@ -221,14 +242,17 @@ enum checksum_err_mode_t {
 
 static checksum_err_mode_t checksum_err_mode = CHECKSUM_ERR_WARN;
 
+static void scan_devices(const char * type, bool with_open, char ** argv);
+
 /*      Takes command options and sets features to be run */    
-const char * parse_options(int argc, char** argv,
+static const char * parse_options(int argc, char** argv,
                            ata_print_options & ataopts,
                            scsi_print_options & scsiopts)
 {
   // Please update getvalidarglist() if you edit shortopts
-  const char *shortopts = "h?Vq:d:T:b:r:s:o:S:HcAl:iaxv:P:t:CXF:n:B:";
+  const char *shortopts = "h?Vq:d:T:b:r:s:o:S:HcAl:iaxv:P:t:CXF:n:B:f:";
   // Please update getvalidarglist() if you edit longopts
+  enum { opt_scan = 1000, opt_scan_open = 1001 };
   struct option longopts[] = {
     { "help",            no_argument,       0, 'h' },
     { "usage",           no_argument,       0, 'h' },
@@ -258,59 +282,60 @@ const char * parse_options(int argc, char** argv,
     { "firmwarebug",     required_argument, 0, 'F' },
     { "nocheck",         required_argument, 0, 'n' },
     { "drivedb",         required_argument, 0, 'B' },
+    { "format",          required_argument, 0, 'f' },
+    { "scan",            no_argument,       0, opt_scan      },
+    { "scan-open",       no_argument,       0, opt_scan_open },
     { 0,                 0,                 0, 0   }
   };
 
   char extraerror[256];
   memset(extraerror, 0, sizeof(extraerror));
-  memset(con,0,sizeof(*con));
   opterr=optopt=0;
 
   const char * type = 0; // set to -d optarg
   bool no_defaultdb = false; // set true on '-B FILE'
+  bool output_format_set = false; // set true on '-f FORMAT'
+  int scan = 0; // set by --scan, --scan-open
   bool badarg = false, captive = false;
   int testcnt = 0; // number of self-tests requested
 
   int optchar;
   char *arg;
 
-  // This miserable construction is needed to get emacs to do proper indenting. Sorry!
-  while (-1 != (optchar = 
-                getopt_long(argc, argv, shortopts, longopts, NULL)
-                )){
+  while ((optchar = getopt_long(argc, argv, shortopts, longopts, 0)) != -1) {
     switch (optchar){
     case 'V':
-      con->dont_print = false;
+      printing_is_off = false;
       pout("%s", format_version_info("smartctl", true /*full*/).c_str());
       EXIT(0);
       break;
     case 'q':
       if (!strcmp(optarg,"errorsonly")) {
-        con->printing_switchable = true;
-        con->dont_print = false;
+        printing_is_switchable = true;
+        printing_is_off = false;
       } else if (!strcmp(optarg,"silent")) {
-        con->printing_switchable = false;
-        con->dont_print = true;
+        printing_is_switchable = false;
+        printing_is_off = true;
       } else if (!strcmp(optarg,"noserial")) {
-        con->dont_print_serial = true;
+        dont_print_serial_number = true;
       } else {
         badarg = true;
       }
       break;
     case 'd':
-      type = optarg;
+      type = (strcmp(optarg, "auto") ? optarg : (char *)0);
       break;
     case 'T':
       if (!strcmp(optarg,"normal")) {
-        con->conservative = false;
-        con->permissive   = 0;
+        failuretest_conservative = false;
+        failuretest_permissive   = 0;
       } else if (!strcmp(optarg,"conservative")) {
-        con->conservative = true;
+        failuretest_conservative = true;
       } else if (!strcmp(optarg,"permissive")) {
-        if (con->permissive<0xff)
-          con->permissive++;
+        if (failuretest_permissive < 0xff)
+          failuretest_permissive++;
       } else if (!strcmp(optarg,"verypermissive")) {
-        con->permissive = 0xff;
+        failuretest_permissive = 0xff;
       } else {
         badarg = true;
       }
@@ -339,11 +364,11 @@ const char * parse_options(int argc, char** argv,
         if (split_report_arg(s, &i)) {
           badarg = true;
         } else if (!strcmp(s,"ioctl")) {
-          con->reportataioctl  = con->reportscsiioctl = i;
+          ata_debugmode  = scsi_debugmode = i;
         } else if (!strcmp(s,"ataioctl")) {
-          con->reportataioctl = i;
+          ata_debugmode = i;
         } else if (!strcmp(s,"scsiioctl")) {
-          con->reportscsiioctl = i;
+          scsi_debugmode = i;
         } else {
           badarg = true;
         }
@@ -385,6 +410,7 @@ const char * parse_options(int argc, char** argv,
       break;
     case 'H':
       ataopts.smart_check_status = scsiopts.smart_check_status = true;
+      scsiopts.smart_ss_media_log = true;
       break;
     case 'F':
       if (!strcmp(optarg,"none")) {
@@ -430,12 +456,38 @@ const char * parse_options(int argc, char** argv,
         ataopts.sataphy = ataopts.sataphy_reset = true;
       } else if (!strcmp(optarg,"background")) {
         scsiopts.smart_background_log = true;
+      } else if (!strcmp(optarg,"ssd")) {
+        ataopts.devstat_ssd_page = true;
+        scsiopts.smart_ss_media_log = true;
+      } else if (!strcmp(optarg,"scterc")) {
+        ataopts.sct_erc_get = true;
       } else if (!strcmp(optarg,"scttemp")) {
         ataopts.sct_temp_sts = ataopts.sct_temp_hist = true;
       } else if (!strcmp(optarg,"scttempsts")) {
         ataopts.sct_temp_sts = true;
       } else if (!strcmp(optarg,"scttemphist")) {
         ataopts.sct_temp_hist = true;
+
+      } else if (!strncmp(optarg, "scttempint,", sizeof("scstempint,")-1)) {
+        unsigned interval = 0; int n1 = -1, n2 = -1, len = strlen(optarg);
+        if (!(   sscanf(optarg,"scttempint,%u%n,p%n", &interval, &n1, &n2) == 1
+              && 0 < interval && interval <= 0xffff && (n1 == len || n2 == len))) {
+            strcpy(extraerror, "Option -l scttempint,N[,p] must have positive integer N\n");
+            badarg = true;
+        }
+        ataopts.sct_temp_int = interval;
+        ataopts.sct_temp_int_pers = (n2 == len);
+
+      } else if (!strncmp(optarg, "devstat", sizeof("devstat")-1)) {
+        int n1 = -1, n2 = -1, len = strlen(optarg);
+        unsigned val = ~0;
+        sscanf(optarg, "devstat%n,%u%n", &n1, &val, &n2);
+        if (n1 == len)
+          ataopts.devstat_all_pages = true;
+        else if (n2 == len && val <= 255)
+          ataopts.devstat_pages.push_back(val);
+        else
+          badarg = true;
 
       } else if (!strncmp(optarg, "xerror", sizeof("xerror")-1)) {
         int n1 = -1, n2 = -1, len = strlen(optarg);
@@ -467,6 +519,18 @@ const char * parse_options(int argc, char** argv,
         else
           badarg = true;
 
+      } else if (!strncmp(optarg, "scterc,", sizeof("scterc,")-1)) {
+        unsigned rt = ~0, wt = ~0; int n = -1;
+        sscanf(optarg,"scterc,%u,%u%n", &rt, &wt, &n);
+        if (n == (int)strlen(optarg) && rt <= 999 && wt <= 999) {
+          ataopts.sct_erc_set = true;
+          ataopts.sct_erc_readtime = rt;
+          ataopts.sct_erc_writetime = wt;
+        }
+        else {
+          sprintf(extraerror, "Option -l scterc,[READTIME,WRITETIME] syntax error\n");
+          badarg = true;
+        }
       } else if (   !strncmp(optarg, "gplog,"   , sizeof("gplog,"   )-1)
                  || !strncmp(optarg, "smartlog,", sizeof("smartlog,")-1)) {
         unsigned logaddr = ~0U; unsigned page = 0, nsectors = 1; char sign = 0;
@@ -512,6 +576,7 @@ const char * parse_options(int argc, char** argv,
       ataopts.smart_selftest_log   = scsiopts.smart_selftest_log  = true;
       ataopts.smart_selective_selftest_log = true;
       /* scsiopts.smart_background_log = true; */
+      scsiopts.smart_ss_media_log = true;
       break;
     case 'x':
       ataopts.drive_info           = scsiopts.drive_info          = true;
@@ -526,14 +591,18 @@ const char * parse_options(int argc, char** argv,
       ataopts.smart_selective_selftest_log = true;
       ataopts.smart_logdir = ataopts.gp_logdir = true;
       ataopts.sct_temp_sts = ataopts.sct_temp_hist = true;
+      ataopts.sct_erc_get = true;
       ataopts.sataphy = true;
       scsiopts.smart_background_log = true;
+      scsiopts.smart_ss_media_log = true;
       scsiopts.sasphy = true;
+      if (!output_format_set)
+        ataopts.output_format = 1; // '-f brief'
       break;
     case 'v':
       // parse vendor-specific definitions of attributes
       if (!strcmp(optarg,"help")) {
-        con->dont_print = false;
+        printing_is_off = false;
         printslogan();
         pout("The valid arguments to -v are:\n\thelp\n%s\n",
              create_vendor_attribute_arg_list().c_str());
@@ -601,7 +670,8 @@ const char * parse_options(int argc, char** argv,
           ataopts.smart_selective_args.pending_time = i+1;
 	}
       } else if (!strncmp(optarg,"select",strlen("select"))) {
-        testcnt++;
+        if (ataopts.smart_selective_args.num_spans == 0)
+          testcnt++;
         // parse range of LBAs to test
         uint64_t start, stop; int mode;
         if (split_selective_arg(optarg, &start, &stop, &mode)) {
@@ -624,15 +694,18 @@ const char * parse_options(int argc, char** argv,
           ataopts.smart_selective_args.num_spans++;
           ataopts.smart_selftest_type = SELECTIVE_SELF_TEST;
         }
-      } else if (!strncmp(optarg, "scttempint,", sizeof("scstempint,")-1)) {
-        unsigned interval = 0; int n1 = -1, n2 = -1, len = strlen(optarg);
-        if (!(   sscanf(optarg,"scttempint,%u%n,p%n", &interval, &n1, &n2) == 1
-              && 0 < interval && interval <= 0xffff && (n1 == len || n2 == len))) {
-            strcpy(extraerror, "Option -t scttempint,N[,p] must have positive integer N\n");
-            badarg = true;
+      } else if (!strncmp(optarg, "scttempint", sizeof("scstempint")-1)) {
+        strcpy(extraerror, "-t scttempint is no longer supported, use -l scttempint instead\n");
+        badarg = true;
+      } else if (!strncmp(optarg, "vendor,", sizeof("vendor,")-1)) {
+        unsigned subcmd = ~0U; int n = -1;
+        if (!(   sscanf(optarg, "%*[a-z],0x%x%n", &subcmd, &n) == 1
+              && subcmd <= 0xff && n == (int)strlen(optarg))) {
+          strcpy(extraerror, "Option -t vendor,0xNN syntax error\n");
+          badarg = true;
         }
-        ataopts.sct_temp_int = interval;
-        ataopts.sct_temp_int_pers = (n2 == len);
+        else
+          ataopts.smart_selftest_type = subcmd;
       } else {
         badarg = true;
       }
@@ -658,6 +731,16 @@ const char * parse_options(int argc, char** argv,
       else
         badarg = true;
       break;
+    case 'f':
+      output_format_set = true;
+      if (!strcmp(optarg,"old")) {
+        ataopts.output_format = 0;
+      } else if (!strcmp(optarg,"brief")) {
+        ataopts.output_format = 1;
+      } else {
+        badarg = true;
+      }
+      break;
     case 'B':
       {
         const char * path = optarg;
@@ -670,14 +753,20 @@ const char * parse_options(int argc, char** argv,
       }
       break;
     case 'h':
-      con->dont_print = false;
+      printing_is_off = false;
       printslogan();
       Usage();
       EXIT(0);  
       break;
+
+    case opt_scan:
+    case opt_scan_open:
+      scan = optchar;
+      break;
+
     case '?':
     default:
-      con->dont_print = false;
+      printing_is_off = false;
       printslogan();
       // Point arg to the argument in which this option was found.
       arg = argv[optind-1];
@@ -726,15 +815,25 @@ const char * parse_options(int argc, char** argv,
       EXIT(FAILCMD);
     }
   }
+
+  // Special handling of --scan, --scanopen
+  if (scan) {
+    // Read or init drive database to allow USB ID check.
+    if (!no_defaultdb && !read_default_drive_databases())
+      EXIT(FAILCMD);
+    scan_devices(type, (scan == opt_scan_open), argv + optind);
+    EXIT(0);
+  }
+
   // At this point we have processed all command-line options.  If the
   // print output is switchable, then start with the print output
   // turned off
-  if (con->printing_switchable)
-    con->dont_print = true;
+  if (printing_is_switchable)
+    printing_is_off = true;
 
   // error message if user has asked for more than one test
   if (testcnt > 1) {
-    con->dont_print = false;
+    printing_is_off = false;
     printslogan();
     pout("\nERROR: smartctl can only run a single test type (or abort) at a time.\n");
     UsageSummary();
@@ -745,7 +844,7 @@ const char * parse_options(int argc, char** argv,
   // asking for a selective self-test
   if (   (ataopts.smart_selective_args.pending_time || ataopts.smart_selective_args.scan_after_select)
       && !ataopts.smart_selective_args.num_spans) {
-    con->dont_print = false;
+    printing_is_off = false;
     printslogan();
     if (ataopts.smart_selective_args.pending_time)
       pout("\nERROR: smartctl -t pending,N must be used with -t select,N-M.\n");
@@ -804,7 +903,7 @@ const char * parse_options(int argc, char** argv,
   return type;
 }
 
-// Printing function (controlled by global con->dont_print) 
+// Printing function (controlled by global printing_is_off)
 // [From GLIBC Manual: Since the prototype doesn't specify types for
 // optional arguments, in a call to a variadic function the default
 // argument promotions are performed on the optional argument
@@ -816,7 +915,7 @@ void pout(const char *fmt, ...){
   
   // initialize variable argument list 
   va_start(ap,fmt);
-  if (con->dont_print){
+  if (printing_is_off) {
     va_end(ap);
     return;
   }
@@ -828,19 +927,32 @@ void pout(const char *fmt, ...){
   return;
 }
 
-// This function is used by utility.cpp to report LOG_CRIT errors.
-// The smartctl version prints to stdout instead of syslog().
-void PrintOut(int priority, const char *fmt, ...) {
-  va_list ap;
+// Globals to set failuretest() policy
+bool failuretest_conservative = false;
+unsigned char failuretest_permissive = 0;
 
-  // avoid warning message about unused variable from gcc -W: just
-  // change value of local copy.
-  priority=0;
+// Compares failure type to policy in effect, and either exits or
+// simply returns to the calling routine.
+// Used in ataprint.cpp and scsiprint.cpp.
+void failuretest(failure_type type, int returnvalue)
+{
+  // If this is an error in an "optional" SMART command
+  if (type == OPTIONAL_CMD) {
+    if (!failuretest_conservative)
+      return;
+    pout("An optional SMART command failed: exiting. Remove '-T conservative' option to continue.\n");
+    EXIT(returnvalue);
+  }
 
-  va_start(ap,fmt);
-  vprintf(fmt,ap);
-  va_end(ap);
-  return;
+  // If this is an error in a "mandatory" SMART command
+  if (type == MANDATORY_CMD) {
+    if (failuretest_permissive--)
+      return;
+    pout("A mandatory SMART command failed: exiting. To continue, add one or more '-T permissive' options.\n");
+    EXIT(returnvalue);
+  }
+
+  throw std::logic_error("failuretest: Unknown type");
 }
 
 // Used to warn users about invalid checksums. Called from atacmds.cpp.
@@ -869,17 +981,67 @@ static const char * get_protocol_info(const smart_device * dev)
   }
 }
 
-// Main program without exception handling
-int main_worker(int argc, char **argv)
+// Device scan
+// smartctl [-d type] --scan[-open] -- [PATTERN] [smartd directive ...]
+void scan_devices(const char * type, bool with_open, char ** argv)
 {
+  bool dont_print = !(ata_debugmode || scsi_debugmode);
+
+  const char * pattern = 0;
+  int ai = 0;
+  if (argv[ai] && argv[ai][0] != '-')
+    pattern = argv[ai++];
+
+  smart_device_list devlist;
+  printing_is_off = dont_print;
+  bool ok = smi()->scan_smart_devices(devlist, type , pattern);
+  printing_is_off = false;
+
+  if (!ok) {
+    pout("# scan_smart_devices: %s\n", smi()->get_errmsg());
+    return;
+  }
+
+  for (unsigned i = 0; i < devlist.size(); i++) {
+    smart_device_auto_ptr dev( devlist.release(i) );
+
+    if (with_open) {
+      printing_is_off = dont_print;
+      dev.replace ( dev->autodetect_open() );
+      printing_is_off = false;
+
+      if (!dev->is_open()) {
+        pout("# %s -d %s # %s, %s device open failed: %s\n", dev->get_dev_name(),
+          dev->get_dev_type(), dev->get_info_name(),
+          get_protocol_info(dev.get()), dev->get_errmsg());
+        continue;
+      }
+    }
+
+    pout("%s -d %s", dev->get_dev_name(), dev->get_dev_type());
+    if (!argv[ai])
+      pout(" # %s, %s device\n", dev->get_info_name(), get_protocol_info(dev.get()));
+    else {
+      for (int j = ai; argv[j]; j++)
+        pout(" %s", argv[j]);
+      pout("\n");
+    }
+
+    if (dev->is_open())
+      dev->close();
+  }
+}
+
+// Main program without exception handling
+static int main_worker(int argc, char **argv)
+{
+  // Throw if CPU endianess does not match compile time test.
+  check_endianness();
+
   // Initialize interface
   smart_interface::init();
   if (!smi())
     return 1;
-
-  // define control block for external functions
-  smartmonctrl control;
-  con=&control;
 
   // Parse input arguments
   ata_print_options ataopts;

@@ -3,8 +3,8 @@
  *
  * Home page of code is: http://smartmontools.sourceforge.net
  *
- * Copyright (C) 2006-9 Douglas Gilbert <dougg@torque.net>
- * Copyright (C) 2009   Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2006-10 Douglas Gilbert <dgilbert@interlog.com>
+ * Copyright (C) 2009-10 Christian Franke <smartmontools-support@lists.sourceforge.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -50,21 +50,19 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <errno.h>
 
 #include "config.h"
 #include "int64.h"
-#include "extern.h"
 #include "scsicmds.h"
 #include "atacmds.h" // ataReadHDIdentity()
+#include "knowndrives.h" // lookup_usb_device()
 #include "utility.h"
 #include "dev_interface.h"
 #include "dev_ata_cmd_set.h" // ata_device_with_command_set
 #include "dev_tunnelled.h" // tunnelled_device<>
 
-const char * scsiata_cpp_cvsid = "$Id: scsiata.cpp 2988 2009-11-29 16:21:07Z samm2 $";
-
-/* for passing global control variables */
-extern smartmonctrl *con;
+const char * scsiata_cpp_cvsid = "$Id: scsiata.cpp 3441 2011-10-12 17:22:15Z chrfranke $";
 
 /* This is a slightly stretched SCSI sense "descriptor" format header.
    The addition is to allow the 0x70 and 0x71 response codes. The idea
@@ -338,7 +336,7 @@ bool sat_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
 
     scsi_device * scsidev = get_tunnel_dev();
     if (!scsidev->scsi_pass_through(&io_hdr)) {
-        if (con->reportscsiioctl > 0)
+        if (scsi_debugmode > 0)
             pout("sat_device::ata_pass_through: scsi_pass_through() failed, "
                  "errno=%d [%s]\n", scsidev->get_errno(), scsidev->get_errmsg());
         return set_err(scsidev->get_err());
@@ -362,10 +360,10 @@ bool sat_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
         scsi_do_sense_disect(&io_hdr, &sinfo);
         status = scsiSimpleSenseFilter(&sinfo);
         if (0 != status) {
-            if (con->reportscsiioctl > 0) {
+            if (scsi_debugmode > 0) {
                 pout("sat_device::ata_pass_through: scsi error: %s\n",
                      scsiErrString(status));
-                if (ardp && (con->reportscsiioctl > 1)) {
+                if (ardp && (scsi_debugmode > 1)) {
                     pout("Values from ATA Return Descriptor are:\n");
                     dStrHex((const char *)ardp, ard_len, 1);
                 }
@@ -378,7 +376,7 @@ bool sat_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
     if (ck_cond) {     /* expecting SAT specific sense data */
         if (have_sense) {
             if (ardp) {
-                if (con->reportscsiioctl > 1) {
+                if (scsi_debugmode > 1) {
                     pout("Values from ATA Return Descriptor are:\n");
                     dStrHex((const char *)ardp, ard_len, 1);
                 }
@@ -411,7 +409,7 @@ bool sat_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
                 (0 == ssh.asc) &&
                 (SCSI_ASCQ_ATA_PASS_THROUGH == ssh.ascq)) {
                 if (ardp) {
-                    if (con->reportscsiioctl > 0) {
+                    if (scsi_debugmode > 0) {
                         pout("Values from ATA Return Descriptor are:\n");
                         dStrHex((const char *)ardp, ard_len, 1);
                     }
@@ -523,7 +521,7 @@ static bool scsi_pass_through_and_check(scsi_device * scsidev,  scsi_cmnd_io * i
 
   // Run cmd
   if (!scsidev->scsi_pass_through(iop)) {
-    if (con->reportscsiioctl > 0)
+    if (scsi_debugmode > 0)
       pout("%sscsi_pass_through() failed, errno=%d [%s]\n",
            msg, scsidev->get_errno(), scsidev->get_errmsg());
     return false;
@@ -534,7 +532,7 @@ static bool scsi_pass_through_and_check(scsi_device * scsidev,  scsi_cmnd_io * i
   scsi_do_sense_disect(iop, &sinfo);
   int err = scsiSimpleSenseFilter(&sinfo);
   if (err) {
-    if (con->reportscsiioctl > 0)
+    if (scsi_debugmode > 0)
       pout("%sscsi error: %s\n", msg, scsiErrString(err));
     return scsidev->set_err(EIO, "scsi error %s", scsiErrString(err));
   }
@@ -592,7 +590,6 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
     int copydata = 0;
     int outlen = 0;
     int ck_cond = 0;    /* set to 1 to read register(s) back */
-    int protocol = 3;   /* non-data */
     int t_dir = 1;      /* 0 -> to device, 1 -> from device */
     int byte_block = 1; /* 0 -> bytes, 1 -> 512 byte blocks */
     int t_length = 0;   /* 0 -> no data transferred */
@@ -617,7 +614,6 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
     case READ_VALUES:           /* READ DATA */
         feature = ATA_SMART_READ_VALUES;
         sector_count = 1;     /* one (512 byte) block */
-        protocol = 4;   /* PIO data-in */
         t_length = 2;   /* sector count holds count */
         copydata = 512;
         break;
@@ -625,7 +621,6 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
         feature = ATA_SMART_READ_THRESHOLDS;
         sector_count = 1;     /* one (512 byte) block */
         lba_low = 1;
-        protocol = 4;   /* PIO data-in */
         t_length = 2;   /* sector count holds count */
         copydata=512;
         break;
@@ -633,7 +628,6 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
         feature = ATA_SMART_READ_LOG_SECTOR;
         sector_count = 1;     /* one (512 byte) block */
         lba_low = select;
-        protocol = 4;   /* PIO data-in */
         t_length = 2;   /* sector count holds count */
         copydata = 512;
         break;
@@ -641,7 +635,6 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
         feature = ATA_SMART_WRITE_LOG_SECTOR;
         sector_count = 1;     /* one (512 byte) block */
         lba_low = select;
-        protocol = 5;   /* PIO data-out */
         t_length = 2;   /* sector count holds count */
         t_dir = 0;      /* to device */
         outlen = 512;
@@ -649,14 +642,12 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
     case IDENTIFY:
         ata_command = ATA_IDENTIFY_DEVICE;
         sector_count = 1;     /* one (512 byte) block */
-        protocol = 4;   /* PIO data-in */
         t_length = 2;   /* sector count holds count */
         copydata = 512;
         break;
     case PIDENTIFY:
         ata_command = ATA_IDENTIFY_PACKET_DEVICE;
         sector_count = 1;     /* one (512 byte) block */
-        protocol = 4;   /* PIO data-in */
         t_length = 2;   /* sector count (7:0) holds count */
         copydata = 512;
         break;
@@ -742,7 +733,7 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
 
     scsi_device * scsidev = get_tunnel_dev();
     if (!scsidev->scsi_pass_through(&io_hdr)) {
-        if (con->reportscsiioctl > 0)
+        if (scsi_debugmode > 0)
             pout("usbcypress_device::ata_command_interface: scsi_pass_through() failed, "
                  "errno=%d [%s]\n", scsidev->get_errno(), scsidev->get_errmsg());
         set_err(scsidev->get_err());
@@ -784,7 +775,7 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
 
 
         if (!scsidev->scsi_pass_through(&io_hdr)) {
-            if (con->reportscsiioctl > 0)
+            if (scsi_debugmode > 0)
                 pout("usbcypress_device::ata_command_interface: scsi_pass_through() failed, "
                      "errno=%d [%s]\n", scsidev->get_errno(), scsidev->get_errmsg());
             set_err(scsidev->get_err());
@@ -798,7 +789,7 @@ int usbcypress_device::ata_command_interface(smart_command_set command, int sele
         }
 
 
-        if (con->reportscsiioctl > 1) {
+        if (scsi_debugmode > 1) {
             pout("Values from ATA Return Descriptor are:\n");
             dStrHex((const char *)ardp, ard_len, 1);
         }
@@ -1321,88 +1312,6 @@ ata_device * smart_interface::autodetect_sat_device(scsi_device * scsidev,
 /////////////////////////////////////////////////////////////////////////////
 // USB device type detection
 
-struct usb_id_entry {
-  int vendor_id, product_id, version;
-  const char * type;
-};
-
-const char d_sat[]       = "sat";
-const char d_cypress[]   = "usbcypress";
-const char d_jmicron[]   = "usbjmicron";
-const char d_jmicron_x[] = "usbjmicron,x";
-const char d_sunplus[]   = "usbsunplus";
-const char d_unsup[]     = "unsupported";
-
-// Map USB IDs -> '-d type' string
-const usb_id_entry usb_ids[] = {
-  // Cypress
-  { 0x04b4, 0x6830, 0x0001, d_unsup   }, // Cypress CY7C68300A (AT2)
-  { 0x04b4, 0x6830, 0x0240, d_cypress }, // Cypress CY7C68300B/C (AT2LP)
-//{ 0x04b4, 0x6831,     -1, d_cypress }, // Cypress CY7C68310 (ISD-300LP)
-  // Myson Century
-  { 0x04cf, 0x8818, 0xb007, d_unsup   }, // Myson Century CS8818
-  // Sunplus
-  { 0x04fc, 0x0c15, 0xf615, d_sunplus }, // SunPlus SPDIF215
-  { 0x04fc, 0x0c25, 0x0103, d_sunplus }, // SunPlus SPDIF225 (USB+SATA->SATA)
-  // Iomega
-  { 0x059b, 0x0272,     -1, d_cypress }, // Iomega LPHD080-0
-  { 0x059b, 0x0275, 0x0001, d_unsup   }, // Iomega MDHD500-U
-  // LaCie
-  { 0x059f, 0x0651,     -1, d_unsup   }, // LaCie hard disk (FA Porsche design)
-  { 0x059f, 0x1018,     -1, d_sat     }, // LaCie hard disk (Neil Poulton design)
-  // In-System Design
-  { 0x05ab, 0x0060, 0x1101, d_cypress }, // In-System/Cypress ISD-300A1
-  // Genesys Logic
-  { 0x05e3, 0x0702,     -1, d_unsup   }, // Genesys Logic GL881E
-  { 0x05e3, 0x0718, 0x0041, d_sat     }, // Genesys Logic ? (TODO: requires '-T permissive')
-  // Prolific
-  { 0x067b, 0x3507, 0x0001, d_unsup   }, // Prolific PL3507
-  // Freecom
-  { 0x07ab, 0xfc8e, 0x010f, d_sunplus }, // Freecom Hard Drive XS
-  // Toshiba
-  { 0x0930, 0x0b09,     -1, d_sunplus }, // Toshiba PX1396E-3T01 (similar to Dura Micro 501)
-  // Seagate
-  { 0x0bc2, 0x2000,     -1, d_sat     }, // Seagate FreeAgent Go
-  { 0x0bc2, 0x2100,     -1, d_sat     }, // Seagate FreeAgent Go
-  { 0x0bc2, 0x3001,     -1, d_sat     }, // Seagate FreeAgent Desk
-  // Dura Micro
-  { 0x0c0b, 0xb159, 0x0103, d_sunplus }, // Dura Micro 509
-  // Maxtor
-  { 0x0d49, 0x7310, 0x0125, d_sat     }, // Maxtor OneTouch 4
-  { 0x0d49, 0x7350, 0x0125, d_sat     }, // Maxtor OneTouch 4 Mini
-  { 0x0d49, 0x7410, 0x0122, d_sat     }, // Maxtor Basics Desktop
-  { 0x0d49, 0x7450, 0x0122, d_sat     }, // Maxtor Basics Portable
-  // Western Digital
-  { 0x1058, 0x0702, 0x0104, d_sat     }, // WD My Passport Portable  
-  { 0x1058, 0x0704, 0x0175, d_sat     }, // WD My Passport Essential
-  { 0x1058, 0x0705, 0x0175, d_sat     }, // WD My Passport Elite
-  { 0x1058, 0x070a, 0x1028, d_sat     }, // WD My Passport 070A
-  { 0x1058, 0x0906, 0x0012, d_sat     }, // WD My Book ES
-  { 0x1058, 0x1001, 0x0104, d_sat     }, // WD Elements Desktop
-  { 0x1058, 0x1003, 0x0175, d_sat     }, // WD Elements Desktop WDE1UBK...
-  { 0x1058, 0x1010, 0x0105, d_sat     }, // WD Elements
-  { 0x1058, 0x1100, 0x0165, d_sat     }, // WD My Book Essential
-  { 0x1058, 0x1102, 0x1028, d_sat     }, // WD My Book
-  // Initio
-  { 0x13fd, 0x0540,     -1, d_unsup   }, // Initio 316000
-  { 0x13fd, 0x1240, 0x0104, d_sat     }, // Initio ? (USB->SATA)
-  { 0x13fd, 0x1340, 0x0208, d_sat     }, // Initio ? (USB+SATA->SATA)
-  // JMicron
-  { 0x152d, 0x2329, 0x0100, d_jmicron }, // JMicron JM20329 (USB->SATA)
-  { 0x152d, 0x2336, 0x0100, d_jmicron_x},// JMicron JM20336 (USB+SATA->SATA, USB->2xSATA)
-  { 0x152d, 0x2338, 0x0100, d_jmicron }, // JMicron JM20337/8 (USB->SATA+PATA, USB+SATA->PATA)
-  { 0x152d, 0x2339, 0x0100, d_jmicron_x},// JMicron JM20339 (USB->SATA)
-  // Verbatim
-  { 0x18a5, 0x0215, 0x0001, d_sat     }, // Verbatim FW/USB160 - Oxford OXUF934SSA-LQAG (USB+IEE1394->SATA)
-  // SunplusIT
-  { 0x1bcf, 0x0c31,     -1, d_sunplus }, // SunplusIT
-  // OnSpec
-  { 0x55aa, 0x2b00, 0x0100, d_unsup   }  // OnSpec ? (USB->PATA)
-};
-
-const unsigned num_usb_ids = sizeof(usb_ids)/sizeof(usb_ids[0]);
-
-
 // Format USB ID for error messages
 static std::string format_usb_id(int vendor_id, int product_id, int version)
 {
@@ -1416,41 +1325,31 @@ static std::string format_usb_id(int vendor_id, int product_id, int version)
 const char * smart_interface::get_usb_dev_type_by_id(int vendor_id, int product_id,
                                                      int version /*= -1*/)
 {
-  const usb_id_entry * entry = 0;
-  bool state = false;
+  usb_dev_info info, info2;
+  int n = lookup_usb_device(vendor_id, product_id, version, info, info2);
 
-  for (unsigned i = 0; i < num_usb_ids; i++) {
-    const usb_id_entry & e = usb_ids[i];
-    if (!(vendor_id == e.vendor_id && product_id == e.product_id))
-      continue;
-
-    // If two entries with same vendor:product ID have different
-    // types, use version (if provided by OS) to select entry.
-    bool s = (version >= 0 && version == e.version);
-    if (entry) {
-      if (s <= state) {
-        if (s == state && e.type != entry->type) {
-          set_err(EINVAL, "USB bridge %s type is ambiguous: '%s' or '%s'",
-                  format_usb_id(vendor_id, product_id, version).c_str(),
-                  e.type, entry->type);
-          return 0;
-        }
-        continue;
-      }
-    }
-    state = s;
-    entry = &e;
-  }
-
-  if (!entry) {
+  if (n <= 0) {
     set_err(EINVAL, "Unknown USB bridge %s",
             format_usb_id(vendor_id, product_id, version).c_str());
     return 0;
   }
-  if (entry->type == d_unsup) {
+
+  if (n > 1) {
+    set_err(EINVAL, "USB bridge %s type is ambiguous: '%s' or '%s'",
+            format_usb_id(vendor_id, product_id, version).c_str(),
+            (!info.usb_type.empty()  ? info.usb_type.c_str()  : "[unsupported]"),
+            (!info2.usb_type.empty() ? info2.usb_type.c_str() : "[unsupported]"));
+    return 0;
+  }
+
+  if (info.usb_type.empty()) {
     set_err(ENOSYS, "Unsupported USB bridge %s",
             format_usb_id(vendor_id, product_id, version).c_str());
     return 0;
   }
-  return entry->type;
+
+  // TODO: change return type to std::string
+  static std::string type;
+  type = info.usb_type;
+  return type.c_str();
 }

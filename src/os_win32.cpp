@@ -3,7 +3,7 @@
  *
  * Home page of code is: http://smartmontools.sourceforge.net
  *
- * Copyright (C) 2004-9 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2004-11 Christian Franke <smartmontools-support@lists.sourceforge.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,15 +16,19 @@
  */
 
 #include "config.h"
+#define WINVER 0x0502
+#define _WIN32_WINNT WINVER
+
 #include "int64.h"
 #include "atacmds.h"
-#include "extern.h"
-extern smartmonctrl * con; // con->permissive,reportataioctl
 #include "scsicmds.h"
 #include "utility.h"
+#include "smartctl.h" // TODO: Do not use smartctl only variables here
 
 #include "dev_interface.h"
 #include "dev_ata_cmd_set.h"
+
+#include "os_win32/wmiquery.h"
 
 #include <errno.h>
 
@@ -32,13 +36,42 @@ extern smartmonctrl * con; // con->permissive,reportataioctl
 #include <assert.h>
 #else
 #undef assert
-#define assert(x) /**/
+#define assert(x) /* */
 #endif
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #include <stddef.h> // offsetof()
 #include <io.h> // access()
+
+// WIN32_LEAN_AND_MEAN may be required to prevent inclusion of <winioctl.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#if HAVE_NTDDDISK_H
+// i686-w64-mingw32, x86_64-w64-mingw32
+// (Missing: FILE_DEVICE_SCSI)
+#include <devioctl.h>
+#include <ntdddisk.h>
+#include <ntddscsi.h>
+#include <ntddstor.h>
+#elif HAVE_DDK_NTDDDISK_H
+// i686-pc-cygwin, i686-pc-mingw32, i586-mingw32msvc
+// (Missing: IOCTL_IDE_PASS_THROUGH, IOCTL_ATA_PASS_THROUGH, FILE_DEVICE_SCSI)
+#include <ddk/ntdddisk.h>
+#include <ddk/ntddscsi.h>
+#include <ddk/ntddstor.h>
+#else
+// MSVC10, older MinGW
+// (Missing: IOCTL_SCSI_MINIPORT_*)
+#include <ntddscsi.h>
+#include <winioctl.h>
+#endif
+
+// CSMI support
+#include "csmisas.h"
+
+#ifdef __CYGWIN__
+#include <cygwin/version.h> // CYGWIN_VERSION_DLL_MAJOR
+#endif
 
 // Macro to check constants at compile time using a dummy typedef
 #define ASSERT_CONST(c, n) \
@@ -46,11 +79,237 @@ extern smartmonctrl * con; // con->permissive,reportataioctl
 #define ASSERT_SIZEOF(t, n) \
   typedef char assert_sizeof_##t[(sizeof(t) == (n)) ? 1 : -1]
 
+#ifndef _WIN64
+#define SELECT_WIN_32_64(x32, x64) (x32)
+#else
+#define SELECT_WIN_32_64(x32, x64) (x64)
+#endif
 
-// Needed by '-V' option (CVS versioning) of smartd/smartctl
-const char *os_XXXX_c_cvsid="$Id: os_win32.cpp 3050 2010-01-27 19:58:38Z chrfranke $"
-ATACMDS_H_CVSID CONFIG_H_CVSID EXTERN_H_CVSID INT64_H_CVSID SCSICMDS_H_CVSID UTILITY_H_CVSID;
+const char * os_win32_cpp_cvsid = "$Id: os_win32.cpp 3430 2011-10-07 21:08:26Z chrfranke $";
 
+// Disable Win9x/ME specific code if no longer supported by compiler.
+#ifdef _WIN64
+  #undef WIN9X_SUPPORT
+#elif !defined(WIN9X_SUPPORT)
+  #if defined(CYGWIN_VERSION_DLL_MAJOR) && (CYGWIN_VERSION_DLL_MAJOR >= 1007)
+    // Win9x/ME support was dropped in Cygwin 1.7
+  #elif defined(_MSC_VER) && (_MSC_VER >= 1500)
+    // Win9x/ME support was dropped in MSVC9 (cl.exe 15.0)
+  #else
+    #define WIN9X_SUPPORT 1
+  #endif
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+// Windows I/O-controls, some declarations are missing in the include files
+
+extern "C" {
+
+// SMART_* IOCTLs, also known as DFP_* (Disk Fault Protection)
+
+ASSERT_CONST(SMART_GET_VERSION, 0x074080);
+ASSERT_CONST(SMART_SEND_DRIVE_COMMAND, 0x07c084);
+ASSERT_CONST(SMART_RCV_DRIVE_DATA, 0x07c088);
+ASSERT_SIZEOF(GETVERSIONINPARAMS, 24);
+ASSERT_SIZEOF(SENDCMDINPARAMS, 32+1);
+ASSERT_SIZEOF(SENDCMDOUTPARAMS, 16+1);
+
+
+// IDE PASS THROUGH (2000, XP, undocumented)
+
+#ifndef IOCTL_IDE_PASS_THROUGH
+
+#define IOCTL_IDE_PASS_THROUGH \
+  CTL_CODE(IOCTL_SCSI_BASE, 0x040A, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+#endif // IOCTL_IDE_PASS_THROUGH
+
+#pragma pack(1)
+
+typedef struct {
+  IDEREGS IdeReg;
+  ULONG DataBufferSize;
+  UCHAR DataBuffer[1];
+} ATA_PASS_THROUGH;
+
+#pragma pack()
+
+ASSERT_CONST(IOCTL_IDE_PASS_THROUGH, 0x04d028);
+ASSERT_SIZEOF(ATA_PASS_THROUGH, 12+1);
+
+
+// ATA PASS THROUGH (Win2003, XP SP2)
+
+#ifndef IOCTL_ATA_PASS_THROUGH
+
+#define IOCTL_ATA_PASS_THROUGH \
+  CTL_CODE(IOCTL_SCSI_BASE, 0x040B, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+typedef struct _ATA_PASS_THROUGH_EX {
+  USHORT Length;
+  USHORT AtaFlags;
+  UCHAR PathId;
+  UCHAR TargetId;
+  UCHAR Lun;
+  UCHAR ReservedAsUchar;
+  ULONG DataTransferLength;
+  ULONG TimeOutValue;
+  ULONG ReservedAsUlong;
+  ULONG_PTR DataBufferOffset;
+  UCHAR PreviousTaskFile[8];
+  UCHAR CurrentTaskFile[8];
+} ATA_PASS_THROUGH_EX;
+
+#define ATA_FLAGS_DRDY_REQUIRED 0x01
+#define ATA_FLAGS_DATA_IN       0x02
+#define ATA_FLAGS_DATA_OUT      0x04
+#define ATA_FLAGS_48BIT_COMMAND 0x08
+#define ATA_FLAGS_USE_DMA       0x10
+#define ATA_FLAGS_NO_MULTIPLE   0x20 // Vista
+
+#endif // IOCTL_ATA_PASS_THROUGH
+
+ASSERT_CONST(IOCTL_ATA_PASS_THROUGH, 0x04d02c);
+ASSERT_SIZEOF(ATA_PASS_THROUGH_EX, SELECT_WIN_32_64(40, 48));
+
+
+// IOCTL_SCSI_PASS_THROUGH[_DIRECT]
+
+ASSERT_CONST(IOCTL_SCSI_PASS_THROUGH, 0x04d004);
+ASSERT_CONST(IOCTL_SCSI_PASS_THROUGH_DIRECT, 0x04d014);
+ASSERT_SIZEOF(SCSI_PASS_THROUGH, SELECT_WIN_32_64(44, 56));
+ASSERT_SIZEOF(SCSI_PASS_THROUGH_DIRECT, SELECT_WIN_32_64(44, 56));
+
+
+// SMART IOCTL via SCSI MINIPORT ioctl
+
+#ifndef FILE_DEVICE_SCSI
+#define FILE_DEVICE_SCSI 0x001b
+#endif
+
+#ifndef IOCTL_SCSI_MINIPORT_SMART_VERSION
+
+#define IOCTL_SCSI_MINIPORT_SMART_VERSION               ((FILE_DEVICE_SCSI << 16) + 0x0500)
+#define IOCTL_SCSI_MINIPORT_IDENTIFY                    ((FILE_DEVICE_SCSI << 16) + 0x0501)
+#define IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS          ((FILE_DEVICE_SCSI << 16) + 0x0502)
+#define IOCTL_SCSI_MINIPORT_READ_SMART_THRESHOLDS       ((FILE_DEVICE_SCSI << 16) + 0x0503)
+#define IOCTL_SCSI_MINIPORT_ENABLE_SMART                ((FILE_DEVICE_SCSI << 16) + 0x0504)
+#define IOCTL_SCSI_MINIPORT_DISABLE_SMART               ((FILE_DEVICE_SCSI << 16) + 0x0505)
+#define IOCTL_SCSI_MINIPORT_RETURN_STATUS               ((FILE_DEVICE_SCSI << 16) + 0x0506)
+#define IOCTL_SCSI_MINIPORT_ENABLE_DISABLE_AUTOSAVE     ((FILE_DEVICE_SCSI << 16) + 0x0507)
+#define IOCTL_SCSI_MINIPORT_SAVE_ATTRIBUTE_VALUES       ((FILE_DEVICE_SCSI << 16) + 0x0508)
+#define IOCTL_SCSI_MINIPORT_EXECUTE_OFFLINE_DIAGS       ((FILE_DEVICE_SCSI << 16) + 0x0509)
+#define IOCTL_SCSI_MINIPORT_ENABLE_DISABLE_AUTO_OFFLINE ((FILE_DEVICE_SCSI << 16) + 0x050a)
+#define IOCTL_SCSI_MINIPORT_READ_SMART_LOG              ((FILE_DEVICE_SCSI << 16) + 0x050b)
+#define IOCTL_SCSI_MINIPORT_WRITE_SMART_LOG             ((FILE_DEVICE_SCSI << 16) + 0x050c)
+
+#endif // IOCTL_SCSI_MINIPORT_SMART_VERSION
+
+ASSERT_CONST(IOCTL_SCSI_MINIPORT, 0x04d008);
+ASSERT_SIZEOF(SRB_IO_CONTROL, 28);
+
+
+// IOCTL_STORAGE_QUERY_PROPERTY
+
+#ifndef IOCTL_STORAGE_QUERY_PROPERTY
+
+#define IOCTL_STORAGE_QUERY_PROPERTY \
+  CTL_CODE(IOCTL_STORAGE_BASE, 0x0500, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+typedef struct _STORAGE_DEVICE_DESCRIPTOR {
+  ULONG Version;
+  ULONG Size;
+  UCHAR DeviceType;
+  UCHAR DeviceTypeModifier;
+  BOOLEAN RemovableMedia;
+  BOOLEAN CommandQueueing;
+  ULONG VendorIdOffset;
+  ULONG ProductIdOffset;
+  ULONG ProductRevisionOffset;
+  ULONG SerialNumberOffset;
+  STORAGE_BUS_TYPE BusType;
+  ULONG RawPropertiesLength;
+  UCHAR RawDeviceProperties[1];
+} STORAGE_DEVICE_DESCRIPTOR;
+
+typedef enum _STORAGE_QUERY_TYPE {
+  PropertyStandardQuery = 0,
+  PropertyExistsQuery,
+  PropertyMaskQuery,
+  PropertyQueryMaxDefined
+} STORAGE_QUERY_TYPE;
+
+typedef enum _STORAGE_PROPERTY_ID {
+  StorageDeviceProperty = 0,
+  StorageAdapterProperty,
+  StorageDeviceIdProperty,
+  StorageDeviceUniqueIdProperty,
+  StorageDeviceWriteCacheProperty,
+  StorageMiniportProperty,
+  StorageAccessAlignmentProperty
+} STORAGE_PROPERTY_ID;
+
+typedef struct _STORAGE_PROPERTY_QUERY {
+  STORAGE_PROPERTY_ID PropertyId;
+  STORAGE_QUERY_TYPE QueryType;
+  UCHAR AdditionalParameters[1];
+} STORAGE_PROPERTY_QUERY;
+
+#endif // IOCTL_STORAGE_QUERY_PROPERTY
+
+ASSERT_CONST(IOCTL_STORAGE_QUERY_PROPERTY, 0x002d1400);
+ASSERT_SIZEOF(STORAGE_DEVICE_DESCRIPTOR, 36+1+3);
+ASSERT_SIZEOF(STORAGE_PROPERTY_QUERY, 8+1+3);
+
+
+// IOCTL_STORAGE_PREDICT_FAILURE
+
+ASSERT_CONST(IOCTL_STORAGE_PREDICT_FAILURE, 0x002d1100);
+ASSERT_SIZEOF(STORAGE_PREDICT_FAILURE, 4+512);
+
+
+// 3ware specific versions of SMART ioctl structs
+
+#define SMART_VENDOR_3WARE      0x13C1  // identifies 3ware specific parameters
+
+#pragma pack(1)
+
+typedef struct _GETVERSIONINPARAMS_EX {
+  BYTE bVersion;
+  BYTE bRevision;
+  BYTE bReserved;
+  BYTE bIDEDeviceMap;
+  DWORD fCapabilities;
+  DWORD dwDeviceMapEx;  // 3ware specific: RAID drive bit map
+  WORD wIdentifier;     // Vendor specific identifier
+  WORD wControllerId;   // 3ware specific: Controller ID (0,1,...)
+  ULONG dwReserved[2];
+} GETVERSIONINPARAMS_EX;
+
+typedef struct _SENDCMDINPARAMS_EX {
+  DWORD cBufferSize;
+  IDEREGS irDriveRegs;
+  BYTE bDriveNumber;
+  BYTE bPortNumber;     // 3ware specific: port number
+  WORD wIdentifier;     // Vendor specific identifier
+  DWORD dwReserved[4];
+  BYTE bBuffer[1];
+} SENDCMDINPARAMS_EX;
+
+#pragma pack()
+
+ASSERT_SIZEOF(GETVERSIONINPARAMS_EX, sizeof(GETVERSIONINPARAMS));
+ASSERT_SIZEOF(SENDCMDINPARAMS_EX, sizeof(SENDCMDINPARAMS));
+
+
+// CSMI structs
+
+ASSERT_SIZEOF(IOCTL_HEADER, sizeof(SRB_IO_CONTROL));
+ASSERT_SIZEOF(CSMI_SAS_DRIVER_INFO_BUFFER, 204);
+ASSERT_SIZEOF(CSMI_SAS_PHY_INFO_BUFFER, 2080);
+ASSERT_SIZEOF(CSMI_SAS_STP_PASSTHRU_BUFFER, 168);
+
+} // extern "C"
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -59,6 +318,16 @@ namespace os_win32 { // no need to publish anything, name provided for Doxygen
 #ifdef _MSC_VER
 #pragma warning(disable:4250)
 #endif
+
+// Running on Win9x/ME ?
+#if WIN9X_SUPPORT
+// Set true in win9x_smart_interface ctor.
+static bool win9x = false;
+#else
+// Never true (const allows compiler to remove dead code).
+const  bool win9x = false;
+#endif
+
 
 class win_smart_device
 : virtual public /*implements*/ smart_device
@@ -112,6 +381,8 @@ private:
   std::string m_options;
   bool m_usr_options; // options set by user?
   bool m_admin; // open with admin access?
+  bool m_id_is_cached; // ata_identify_is_cached() return value.
+  bool m_is_3ware; // AMCC/3ware controller detected?
   int m_drive, m_port;
   int m_smartver_state;
 };
@@ -137,6 +408,8 @@ private:
 
 /////////////////////////////////////////////////////////////////////////////
 
+#if WIN9X_SUPPORT
+
 class win_aspi_device
 : public /*implements*/ scsi_device
 {
@@ -154,6 +427,83 @@ public:
 private:
   int m_adapter;
   unsigned char m_id;
+};
+
+#endif // WIN9X_SUPPORT
+
+
+//////////////////////////////////////////////////////////////////////
+
+class csmi_device
+: virtual public /*extends*/ smart_device
+{
+public:
+  /// Get phy info
+  bool get_phy_info(CSMI_SAS_PHY_INFO & phy_info);
+
+  /// Check physical drive existence
+  bool check_phy(const CSMI_SAS_PHY_INFO & phy_info, unsigned phy_no);
+
+protected:
+  csmi_device()
+    : smart_device(never_called)
+    { memset(&m_phy_ent, 0, sizeof(m_phy_ent)); }
+
+  /// Select physical drive
+  bool select_phy(unsigned phy_no);
+
+  /// Get info for selected physical drive
+  const CSMI_SAS_PHY_ENTITY & get_phy_ent() const
+    { return m_phy_ent; }
+
+  /// Call platform-specific CSMI ioctl
+  virtual bool csmi_ioctl(unsigned code, IOCTL_HEADER * csmi_buffer,
+    unsigned csmi_bufsiz) = 0;
+
+private:
+  CSMI_SAS_PHY_ENTITY m_phy_ent; ///< CSMI info for this phy
+};
+
+
+class csmi_ata_device
+: virtual public /*extends*/ csmi_device,
+  virtual public /*implements*/ ata_device
+{
+public:
+  virtual bool ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out);
+
+protected:
+  csmi_ata_device()
+    : smart_device(never_called) { }
+};
+
+
+//////////////////////////////////////////////////////////////////////
+
+class win_csmi_device
+: public /*implements*/ csmi_ata_device
+{
+public:
+  win_csmi_device(smart_interface * intf, const char * dev_name,
+    const char * req_type);
+
+  virtual ~win_csmi_device() throw();
+
+  virtual bool open();
+
+  virtual bool close();
+
+  virtual bool is_open() const;
+
+  bool open_scsi();
+
+protected:
+  virtual bool csmi_ioctl(unsigned code, IOCTL_HEADER * csmi_buffer,
+    unsigned csmi_bufsiz);
+
+private:
+  HANDLE m_fh; ///< Controller device handle
+  unsigned m_phy_no; ///< Physical drive number
 };
 
 
@@ -193,8 +543,8 @@ public:
 
   virtual std::string get_app_examples(const char * appname);
 
-  virtual bool scan_smart_devices(smart_device_list & devlist, const char * type,
-    const char * pattern = 0);
+//virtual bool scan_smart_devices(smart_device_list & devlist, const char * type,
+//  const char * pattern = 0);
 
 protected:
   virtual ata_device * get_ata_device(const char * name, const char * type);
@@ -202,55 +552,56 @@ protected:
 //virtual scsi_device * get_scsi_device(const char * name, const char * type);
 
   virtual smart_device * autodetect_smart_device(const char * name);
-
-  virtual bool ata_scan(smart_device_list & devlist) = 0;
-
-  virtual bool scsi_scan(smart_device_list & devlist) = 0;
 };
+
+#if WIN9X_SUPPORT
 
 // Win9x/ME reduced functionality
 class win9x_smart_interface
 : public /*extends*/ win_smart_interface
 {
+public:
+  win9x_smart_interface()
+    { win9x = true; }
+
+  virtual bool scan_smart_devices(smart_device_list & devlist, const char * type,
+    const char * pattern = 0);
+
 protected:
   virtual scsi_device * get_scsi_device(const char * name, const char * type);
 
-  virtual bool ata_scan(smart_device_list & devlist);
+private:
+  bool ata_scan(smart_device_list & devlist);
 
-  virtual bool scsi_scan(smart_device_list & devlist);
+  bool scsi_scan(smart_device_list & devlist);
 };
+
+#endif // WIN9X_SUPPORT
 
 // WinNT,2000,XP,...
 class winnt_smart_interface
 : public /*extends*/ win_smart_interface
 {
+public:
+  virtual bool scan_smart_devices(smart_device_list & devlist, const char * type,
+    const char * pattern = 0);
+
 protected:
   virtual scsi_device * get_scsi_device(const char * name, const char * type);
 
   virtual smart_device * autodetect_smart_device(const char * name);
-
-  virtual bool ata_scan(smart_device_list & devlist);
-
-  virtual bool scsi_scan(smart_device_list & devlist);
 };
 
 
 //////////////////////////////////////////////////////////////////////
 
-// Running on Win9x/ME ?
-static inline bool is_win9x()
-{
-  return !!(GetVersion() & 0x80000000);
-}
-
+#ifndef _WIN64
 // Running on 64-bit Windows as 32-bit app ?
 static bool is_wow64()
 {
-  HMODULE hk = GetModuleHandleA("kernel32");
-  if (!hk)
-    return false;
   BOOL (WINAPI * IsWow64Process_p)(HANDLE, PBOOL) =
-    (BOOL (WINAPI *)(HANDLE, PBOOL))GetProcAddress(hk, "IsWow64Process");
+    (BOOL (WINAPI *)(HANDLE, PBOOL))
+    GetProcAddress(GetModuleHandleA("kernel32.dll"), "IsWow64Process");
   if (!IsWow64Process_p)
     return false;
   BOOL w64 = FALSE;
@@ -258,6 +609,7 @@ static bool is_wow64()
     return false;
   return !!w64;
 }
+#endif // _WIN64
 
 // Return info string about build host and OS version
 std::string win_smart_interface::get_os_version_str()
@@ -308,7 +660,12 @@ std::string win_smart_interface::get_os_version_str()
     default: w = 0; break;
   }
 
-  const char * w64 = (is_wow64() ? "(64)" : "");
+  const char * w64 = "";
+#ifndef _WIN64
+  if (is_wow64())
+    w64 = "(64)";
+#endif
+
   if (!w)
     snprintf(vptr, vlen, "-%s%lu.%lu%s",
       (vi.dwPlatformId==VER_PLATFORM_WIN32_NT ? "nt" : "9x"),
@@ -326,6 +683,7 @@ std::string win_smart_interface::get_os_version_str()
 enum win_dev_type { DEV_UNKNOWN = 0, DEV_ATA, DEV_SCSI, DEV_USB };
 
 static win_dev_type get_phy_drive_type(int drive);
+static win_dev_type get_phy_drive_type(int drive, GETVERSIONINPARAMS_EX * ata_version_ex);
 static win_dev_type get_log_drive_type(int drive);
 static bool get_usb_id(int drive, unsigned short & vendor_id,
                        unsigned short & product_id);
@@ -335,11 +693,11 @@ static const char * ata_get_def_options(void);
 
 static int is_permissive()
 {
-  if (!con->permissive) {
+  if (!failuretest_permissive) {
     pout("To continue, add one or more '-T permissive' options.\n");
     return 0;
   }
-  con->permissive--;
+  failuretest_permissive--;
   return 1;
 }
 
@@ -364,21 +722,31 @@ static const char * skipdev(const char * s)
 ata_device * win_smart_interface::get_ata_device(const char * name, const char * type)
 {
   const char * testname = skipdev(name);
+  if (!strncmp(testname, "csmi", 4))
+    return new win_csmi_device(this, name, type);
   if (!strncmp(testname, "tw_cli", 6))
     return new win_tw_cli_device(this, name, type);
   return new win_ata_device(this, name, type);
 }
+
+#ifdef WIN9X_SUPPORT
 
 scsi_device * win9x_smart_interface::get_scsi_device(const char * name, const char * type)
 {
   return new win_aspi_device(this, name, type);
 }
 
+#endif
+
 scsi_device * winnt_smart_interface::get_scsi_device(const char * name, const char * type)
 {
   const char * testname = skipdev(name);
   if (!strncmp(testname, "scsi", 4))
+#if WIN9X_SUPPORT
     return new win_aspi_device(this, name, type);
+#else
+    return (set_err(EINVAL, "ASPI interface not supported"), (scsi_device *)0);
+#endif
   return new win_scsi_device(this, name, type);
 }
 
@@ -416,8 +784,10 @@ smart_device * win_smart_interface::autodetect_smart_device(const char * name)
   const char * testname = skipdev(name);
   if (!strncmp(testname, "hd", 2))
     return new win_ata_device(this, name, "");
+#if WIN9X_SUPPORT
   if (!strncmp(testname, "scsi", 4))
     return new win_aspi_device(this, name, "");
+#endif
   if (!strncmp(testname, "tw_cli", 6))
     return new win_tw_cli_device(this, name, "");
   return 0;
@@ -428,6 +798,9 @@ smart_device * winnt_smart_interface::autodetect_smart_device(const char * name)
   smart_device * dev = win_smart_interface::autodetect_smart_device(name);
   if (dev)
     return dev;
+
+  if (!strncmp(skipdev(name), "csmi", 4))
+    return new win_csmi_device(this, name, "");
 
   int phydrive = -1;
   win_dev_type type = get_dev_type(name, phydrive);
@@ -456,8 +829,11 @@ smart_device * winnt_smart_interface::autodetect_smart_device(const char * name)
 }
 
 
-// makes a list of ATA or SCSI devices for the DEVICESCAN directive
-bool win_smart_interface::scan_smart_devices(smart_device_list & devlist,
+#if WIN9X_SUPPORT
+
+// Scan for devices on Win9x/ME
+
+bool win9x_smart_interface::scan_smart_devices(smart_device_list & devlist,
   const char * type, const char * pattern /* = 0*/)
 {
   if (pattern) {
@@ -477,6 +853,132 @@ bool win_smart_interface::scan_smart_devices(smart_device_list & devlist,
   return true;
 }
 
+#endif  // WIN9X_SUPPORT
+
+
+// Scan for devices
+
+bool winnt_smart_interface::scan_smart_devices(smart_device_list & devlist,
+  const char * type, const char * pattern /* = 0*/)
+{
+  if (pattern) {
+    set_err(EINVAL, "DEVICESCAN with pattern not implemented yet");
+    return false;
+  }
+
+  // Set valid types
+  bool ata, scsi, usb, csmi;
+  if (!type) {
+    ata = scsi = usb = csmi = true;
+  }
+  else {
+    ata = scsi = usb = csmi = false;
+    if (!strcmp(type, "ata"))
+      ata = true;
+    else if (!strcmp(type, "scsi"))
+      scsi = true;
+    else if (!strcmp(type, "usb"))
+      usb = true;
+    else if (!strcmp(type, "csmi"))
+      csmi = true;
+    else {
+      set_err(EINVAL, "Invalid type '%s', valid arguments are: ata, scsi, usb, csmi", type);
+      return false;
+    }
+  }
+
+  // Scan up to 10 drives and 2 3ware controllers
+  const int max_raid = 2;
+  bool raid_seen[max_raid] = {false, false};
+
+  char name[20];
+  for (int i = 0; i <= 9; i++) {
+    sprintf(name, "/dev/sd%c", 'a'+i);
+    GETVERSIONINPARAMS_EX vers_ex;
+
+    switch (get_phy_drive_type(i, (ata ? &vers_ex : 0))) {
+      case DEV_ATA:
+        // Driver supports SMART_GET_VERSION or STORAGE_QUERY_PROPERTY returned ATA/SATA
+        if (!ata)
+          continue;
+
+        // Interpret RAID drive map if present
+        if (vers_ex.wIdentifier == SMART_VENDOR_3WARE) {
+          // Skip if too many controllers or logical drive from this controller already seen
+          if (!(vers_ex.wControllerId < max_raid && !raid_seen[vers_ex.wControllerId]))
+            continue;
+          raid_seen[vers_ex.wControllerId] = true;
+          // Add physical drives
+          int len = strlen(name);
+          for (int pi = 0; pi < 32; pi++) {
+            if (vers_ex.dwDeviceMapEx & (1L << pi)) {
+              sprintf(name+len, ",%u", pi);
+              devlist.push_back( new win_ata_device(this, name, "ata") );
+            }
+          }
+        }
+        else {
+          devlist.push_back( new win_ata_device(this, name, "ata") );
+        }
+        break;
+
+      case DEV_SCSI:
+        // STORAGE_QUERY_PROPERTY returned SCSI/SAS/...
+        if (!scsi)
+          continue;
+        devlist.push_back( new win_scsi_device(this, name, "scsi") );
+        break;
+
+      case DEV_USB:
+        // STORAGE_QUERY_PROPERTY returned USB
+        if (!usb)
+          continue;
+        {
+          // TODO: Use common function for this and autodetect_smart_device()
+          // Get USB bridge ID
+          unsigned short vendor_id = 0, product_id = 0;
+          if (!get_usb_id(i, vendor_id, product_id))
+            continue;
+          // Get type name for this ID
+          const char * usbtype = get_usb_dev_type_by_id(vendor_id, product_id);
+          if (!usbtype)
+            continue;
+          // Return SAT/USB device for this type
+          ata_device * dev = get_sat_device(usbtype, new win_scsi_device(this, name, ""));
+          if (!dev)
+            continue;
+          devlist.push_back(dev);
+        }
+        break;
+
+      default:
+        // Unknown type
+        break;
+    }
+  }
+
+  if (csmi) {
+    // Scan CSMI devices
+    for (int i = 0; i <= 9; i++) {
+      snprintf(name, sizeof(name)-1, "/dev/csmi%d,0", i);
+      win_csmi_device test_dev(this, name, "");
+      if (!test_dev.open_scsi())
+        continue;
+      CSMI_SAS_PHY_INFO phy_info;
+      if (!test_dev.get_phy_info(phy_info))
+        continue;
+
+      for (int pi = 0; pi < phy_info.bNumberOfPhys; pi++) {
+        if (!test_dev.check_phy(phy_info, pi))
+          continue;
+        snprintf(name, sizeof(name)-1, "/dev/csmi%d,%d", i, pi);
+        devlist.push_back( new win_csmi_device(this, name, "ata") );
+      }
+    }
+  }
+  return true;
+}
+
 
 // get examples for smartctl
 std::string win_smart_interface::get_app_examples(const char * appname)
@@ -490,8 +992,10 @@ std::string win_smart_interface::get_app_examples(const char * appname)
          "  smartctl -t long /dev/hda              (Executes extended disk self-test)\n\n"
          "  smartctl --attributes --log=selftest --quietmode=errorsonly /dev/hda\n"
          "                                      (Prints Self-Test & Attribute errors)\n"
+#if WIN9X_SUPPORT
          "  smartctl -a /dev/scsi21\n"
          "             (Prints all information for SCSI disk on ASPI adapter 2, ID 1)\n"
+#endif
          "  smartctl -a /dev/sda\n"
          "             (Prints all information for SCSI disk on PhysicalDrive 0)\n"
          "  smartctl -a /dev/pd3\n"
@@ -518,132 +1022,8 @@ std::string win_smart_interface::get_app_examples(const char * appname)
 // ATA Interface
 /////////////////////////////////////////////////////////////////////////////
 
-// SMART_* IOCTLs, also known as DFP_* (Disk Fault Protection)
-
-#define FILE_READ_ACCESS       0x0001
-#define FILE_WRITE_ACCESS      0x0002
-#define METHOD_BUFFERED             0
-#define CTL_CODE(DeviceType, Function, Method, Access) (((DeviceType) << 16) | ((Access) << 14) | ((Function) << 2) | (Method))
-
-#define FILE_DEVICE_DISK       7
-#define IOCTL_DISK_BASE        FILE_DEVICE_DISK
-
-#define SMART_GET_VERSION \
-  CTL_CODE(IOCTL_DISK_BASE, 0x0020, METHOD_BUFFERED, FILE_READ_ACCESS)
-
-#define SMART_SEND_DRIVE_COMMAND \
-  CTL_CODE(IOCTL_DISK_BASE, 0x0021, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-
-#define SMART_RCV_DRIVE_DATA \
-  CTL_CODE(IOCTL_DISK_BASE, 0x0022, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-
-ASSERT_CONST(SMART_GET_VERSION       , 0x074080);
-ASSERT_CONST(SMART_SEND_DRIVE_COMMAND, 0x07c084);
-ASSERT_CONST(SMART_RCV_DRIVE_DATA    , 0x07c088);
-
 #define SMART_CYL_LOW  0x4F
 #define SMART_CYL_HI   0xC2
-
-
-#pragma pack(1)
-
-typedef struct _GETVERSIONOUTPARAMS {
-  UCHAR  bVersion;
-  UCHAR  bRevision;
-  UCHAR  bReserved;
-  UCHAR  bIDEDeviceMap;
-  ULONG  fCapabilities;
-  ULONG  dwReserved[4];
-} GETVERSIONOUTPARAMS, *PGETVERSIONOUTPARAMS, *LPGETVERSIONOUTPARAMS;
-
-ASSERT_SIZEOF(GETVERSIONOUTPARAMS, 24);
-
-
-#define SMART_VENDOR_3WARE      0x13C1  // identifies 3ware specific parameters
-
-typedef struct _GETVERSIONINPARAMS_EX {
-  BYTE    bVersion;
-  BYTE    bRevision;
-  BYTE    bReserved;
-  BYTE    bIDEDeviceMap;
-  DWORD   fCapabilities;
-  DWORD   dwDeviceMapEx;  // 3ware specific: RAID drive bit map
-  WORD    wIdentifier;    // Vendor specific identifier
-  WORD    wControllerId;  // 3ware specific: Controller ID (0,1,...)
-  ULONG   dwReserved[2];
-} GETVERSIONINPARAMS_EX, *PGETVERSIONINPARAMS_EX, *LPGETVERSIONINPARAMS_EX;
-
-ASSERT_SIZEOF(GETVERSIONINPARAMS_EX, sizeof(GETVERSIONOUTPARAMS));
-
-
-typedef struct _IDEREGS {
-  UCHAR  bFeaturesReg;
-  UCHAR  bSectorCountReg;
-  UCHAR  bSectorNumberReg;
-  UCHAR  bCylLowReg;
-  UCHAR  bCylHighReg;
-  UCHAR  bDriveHeadReg;
-  UCHAR  bCommandReg;
-  UCHAR  bReserved;
-} IDEREGS, *PIDEREGS, *LPIDEREGS;
-
-typedef struct _SENDCMDINPARAMS {
-  ULONG  cBufferSize;
-  IDEREGS  irDriveRegs;
-  UCHAR  bDriveNumber;
-  UCHAR  bReserved[3];
-  ULONG  dwReserved[4];
-  UCHAR  bBuffer[1];
-} SENDCMDINPARAMS, *PSENDCMDINPARAMS, *LPSENDCMDINPARAMS;
-
-ASSERT_SIZEOF(SENDCMDINPARAMS, 32+1);
-
-typedef struct _SENDCMDINPARAMS_EX {
-  DWORD   cBufferSize;
-  IDEREGS irDriveRegs;
-  BYTE    bDriveNumber;
-  BYTE    bPortNumber;   // 3ware specific: port number
-  WORD    wIdentifier;   // Vendor specific identifier
-  DWORD   dwReserved[4];
-  BYTE    bBuffer[1];
-} SENDCMDINPARAMS_EX, *PSENDCMDINPARAMS_EX, *LPSENDCMDINPARAMS_EX;
-
-ASSERT_SIZEOF(SENDCMDINPARAMS_EX, sizeof(SENDCMDINPARAMS));
-
-
-/* DRIVERSTATUS.bDriverError constants (just for info, not used)
-#define SMART_NO_ERROR                    0
-#define SMART_IDE_ERROR                   1
-#define SMART_INVALID_FLAG                2
-#define SMART_INVALID_COMMAND             3
-#define SMART_INVALID_BUFFER              4
-#define SMART_INVALID_DRIVE               5
-#define SMART_INVALID_IOCTL               6
-#define SMART_ERROR_NO_MEM                7
-#define SMART_INVALID_REGISTER            8
-#define SMART_NOT_SUPPORTED               9
-#define SMART_NO_IDE_DEVICE               10
-*/
-
-typedef struct _DRIVERSTATUS {
-  UCHAR  bDriverError;
-  UCHAR  bIDEError;
-  UCHAR  bReserved[2];
-  ULONG  dwReserved[2];
-} DRIVERSTATUS, *PDRIVERSTATUS, *LPDRIVERSTATUS;
-
-typedef struct _SENDCMDOUTPARAMS {
-  ULONG  cBufferSize;
-  DRIVERSTATUS  DriverStatus;
-  UCHAR  bBuffer[1];
-} SENDCMDOUTPARAMS, *PSENDCMDOUTPARAMS, *LPSENDCMDOUTPARAMS;
-
-ASSERT_SIZEOF(SENDCMDOUTPARAMS, 16+1);
-
-#pragma pack()
-
-
-/////////////////////////////////////////////////////////////////////////////
 
 static void print_ide_regs(const IDEREGS * r, int out)
 {
@@ -666,20 +1046,20 @@ static void print_ide_regs_io(const IDEREGS * ri, const IDEREGS * ro)
 
 static int smart_get_version(HANDLE hdevice, GETVERSIONINPARAMS_EX * ata_version_ex = 0)
 {
-  GETVERSIONOUTPARAMS vers; memset(&vers, 0, sizeof(vers));
+  GETVERSIONINPARAMS vers; memset(&vers, 0, sizeof(vers));
   const GETVERSIONINPARAMS_EX & vers_ex = (const GETVERSIONINPARAMS_EX &)vers;
   DWORD num_out;
 
   if (!DeviceIoControl(hdevice, SMART_GET_VERSION,
     NULL, 0, &vers, sizeof(vers), &num_out, NULL)) {
-    if (con->reportataioctl)
+    if (ata_debugmode)
       pout("  SMART_GET_VERSION failed, Error=%ld\n", GetLastError());
     errno = ENOSYS;
     return -1;
   }
-  assert(num_out == sizeof(GETVERSIONOUTPARAMS));
+  assert(num_out == sizeof(GETVERSIONINPARAMS));
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  SMART_GET_VERSION suceeded, bytes returned: %lu\n"
          "    Vers = %d.%d, Caps = 0x%lx, DeviceMap = 0x%02x\n",
       num_out, vers.bVersion, vers.bRevision,
@@ -745,7 +1125,7 @@ static int smart_ioctl(HANDLE hdevice, int drive, IDEREGS * regs, char * data, u
     outbuf, sizeof(SENDCMDOUTPARAMS)-1 + size_out, &num_out, NULL)) {
     // CAUTION: DO NOT change "regs" Parameter in this case, see ata_command_interface()
     long err = GetLastError();
-    if (con->reportataioctl && (err != ERROR_INVALID_PARAMETER || con->reportataioctl > 1)) {
+    if (ata_debugmode && (err != ERROR_INVALID_PARAMETER || ata_debugmode > 1)) {
       pout("  %s failed, Error=%ld\n", name, err);
       print_ide_regs_io(regs, NULL);
     }
@@ -759,7 +1139,7 @@ static int smart_ioctl(HANDLE hdevice, int drive, IDEREGS * regs, char * data, u
   outpar = (const SENDCMDOUTPARAMS *)outbuf;
 
   if (outpar->DriverStatus.bDriverError) {
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  %s failed, DriverError=0x%02x, IDEError=0x%02x\n", name,
         outpar->DriverStatus.bDriverError, outpar->DriverStatus.bIDEError);
       print_ide_regs_io(regs, NULL);
@@ -768,7 +1148,7 @@ static int smart_ioctl(HANDLE hdevice, int drive, IDEREGS * regs, char * data, u
     return -1;
   }
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  %s suceeded, bytes returned: %lu (buffer %lu)\n", name,
       num_out, outpar->cBufferSize);
     print_ide_regs_io(regs, (regs->bFeaturesReg == ATA_SMART_STATUS ?
@@ -778,10 +1158,10 @@ static int smart_ioctl(HANDLE hdevice, int drive, IDEREGS * regs, char * data, u
   if (datasize)
     memcpy(data, outpar->bBuffer, 512);
   else if (regs->bFeaturesReg == ATA_SMART_STATUS) {
-    if (nonempty(const_cast<unsigned char *>(outpar->bBuffer), sizeof(IDEREGS)))
-      *regs = *(const IDEREGS *)(outpar->bBuffer);
+    if (nonempty(outpar->bBuffer, sizeof(IDEREGS)))
+      memcpy(regs, outpar->bBuffer, sizeof(IDEREGS));
     else {  // Workaround for driver not returning regs
-      if (con->reportataioctl)
+      if (ata_debugmode)
         pout("  WARNING: driver does not return ATA registers in output buffer!\n");
       *regs = inpar.irDriveRegs;
     }
@@ -792,34 +1172,10 @@ static int smart_ioctl(HANDLE hdevice, int drive, IDEREGS * regs, char * data, u
 
 
 /////////////////////////////////////////////////////////////////////////////
-
 // IDE PASS THROUGH (2000, XP, undocumented)
 //
 // Based on WinATA.cpp, 2002 c't/Matthias Withopf
 // ftp://ftp.heise.de/pub/ct/listings/0207-218.zip
-
-#define FILE_DEVICE_CONTROLLER  4
-#define IOCTL_SCSI_BASE         FILE_DEVICE_CONTROLLER
-
-#define IOCTL_IDE_PASS_THROUGH \
-  CTL_CODE(IOCTL_SCSI_BASE, 0x040A, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-
-ASSERT_CONST(IOCTL_IDE_PASS_THROUGH, 0x04d028);
-
-#pragma pack(1)
-
-typedef struct {
-  IDEREGS IdeReg;
-  ULONG   DataBufferSize;
-  UCHAR   DataBuffer[1];
-} ATA_PASS_THROUGH;
-
-ASSERT_SIZEOF(ATA_PASS_THROUGH, 12+1);
-
-#pragma pack()
-
-
-/////////////////////////////////////////////////////////////////////////////
 
 static int ide_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, unsigned datasize)
 {
@@ -845,7 +1201,7 @@ static int ide_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, u
   if (!DeviceIoControl(hdevice, IOCTL_IDE_PASS_THROUGH,
     buf, size, buf, size, &num_out, NULL)) {
     long err = GetLastError();
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  IOCTL_IDE_PASS_THROUGH failed, Error=%ld\n", err);
       print_ide_regs_io(regs, NULL);
     }
@@ -856,7 +1212,7 @@ static int ide_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, u
 
   // Check ATA status
   if (buf->IdeReg.bCommandReg/*Status*/ & 0x01) {
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  IOCTL_IDE_PASS_THROUGH command failed:\n");
       print_ide_regs_io(regs, &buf->IdeReg);
     }
@@ -869,7 +1225,7 @@ static int ide_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, u
   if (datasize) {
     if (   num_out != size
         || (buf->DataBuffer[0] == magic && !nonempty(buf->DataBuffer+1, datasize-1))) {
-      if (con->reportataioctl) {
+      if (ata_debugmode) {
         pout("  IOCTL_IDE_PASS_THROUGH output data missing (%lu, %lu)\n",
           num_out, buf->DataBufferSize);
         print_ide_regs_io(regs, &buf->IdeReg);
@@ -881,7 +1237,7 @@ static int ide_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, u
     memcpy(data, buf->DataBuffer, datasize);
   }
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  IOCTL_IDE_PASS_THROUGH suceeded, bytes returned: %lu (buffer %lu)\n",
       num_out, buf->DataBufferSize);
     print_ide_regs_io(regs, &buf->IdeReg);
@@ -895,40 +1251,7 @@ static int ide_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, u
 
 
 /////////////////////////////////////////////////////////////////////////////
-
 // ATA PASS THROUGH (Win2003, XP SP2)
-
-#define IOCTL_ATA_PASS_THROUGH \
-  CTL_CODE(IOCTL_SCSI_BASE, 0x040B, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-
-ASSERT_CONST(IOCTL_ATA_PASS_THROUGH, 0x04d02c);
-
-typedef struct _ATA_PASS_THROUGH_EX {
-  USHORT  Length;
-  USHORT  AtaFlags;
-  UCHAR  PathId;
-  UCHAR  TargetId;
-  UCHAR  Lun;
-  UCHAR  ReservedAsUchar;
-  ULONG  DataTransferLength;
-  ULONG  TimeOutValue;
-  ULONG  ReservedAsUlong;
-  ULONG/*_PTR*/ DataBufferOffset;
-  UCHAR  PreviousTaskFile[8];
-  UCHAR  CurrentTaskFile[8];
-} ATA_PASS_THROUGH_EX, *PATA_PASS_THROUGH_EX;
-
-ASSERT_SIZEOF(ATA_PASS_THROUGH_EX, 40);
-
-#define ATA_FLAGS_DRDY_REQUIRED 0x01
-#define ATA_FLAGS_DATA_IN       0x02
-#define ATA_FLAGS_DATA_OUT      0x04
-#define ATA_FLAGS_48BIT_COMMAND 0x08
-#define ATA_FLAGS_USE_DMA       0x10
-#define ATA_FLAGS_NO_MULTIPLE   0x20 // Vista
-
-
-/////////////////////////////////////////////////////////////////////////////
 
 // Warning:
 // IOCTL_ATA_PASS_THROUGH[_DIRECT] can only handle one interrupt/DRQ data
@@ -999,7 +1322,7 @@ static int ata_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, IDEREGS * prev
   if (!DeviceIoControl(hdevice, IOCTL_ATA_PASS_THROUGH,
     &ab, size, &ab, size, &num_out, NULL)) {
     long err = GetLastError();
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  IOCTL_ATA_PASS_THROUGH failed, Error=%ld\n", err);
       print_ide_regs_io(regs, NULL);
     }
@@ -1009,7 +1332,7 @@ static int ata_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, IDEREGS * prev
 
   // Check ATA status
   if (ctfregs->bCommandReg/*Status*/ & (0x01/*Err*/|0x08/*DRQ*/)) {
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  IOCTL_ATA_PASS_THROUGH command failed:\n");
       print_ide_regs_io(regs, ctfregs);
     }
@@ -1021,7 +1344,7 @@ static int ata_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, IDEREGS * prev
   if (datasize > 0) {
     if (   num_out != size
         || (ab.ucDataBuf[0] == magic && !nonempty(ab.ucDataBuf+1, datasize-1))) {
-      if (con->reportataioctl) {
+      if (ata_debugmode) {
         pout("  IOCTL_ATA_PASS_THROUGH output data missing (%lu)\n", num_out);
         print_ide_regs_io(regs, ctfregs);
       }
@@ -1031,7 +1354,7 @@ static int ata_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, IDEREGS * prev
     memcpy(data, ab.ucDataBuf, datasize);
   }
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  IOCTL_ATA_PASS_THROUGH suceeded, bytes returned: %lu\n", num_out);
     print_ide_regs_io(regs, ctfregs);
   }
@@ -1044,40 +1367,10 @@ static int ata_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, IDEREGS * prev
 
 
 /////////////////////////////////////////////////////////////////////////////
-
 // ATA PASS THROUGH via SCSI PASS THROUGH (WinNT4 only)
 
-#define IOCTL_SCSI_PASS_THROUGH \
-  CTL_CODE(IOCTL_SCSI_BASE, 0x0401, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-
-ASSERT_CONST(IOCTL_SCSI_PASS_THROUGH, 0x04d004);
-
-#define SCSI_IOCTL_DATA_OUT          0
-#define SCSI_IOCTL_DATA_IN           1
-#define SCSI_IOCTL_DATA_UNSPECIFIED  2
 // undocumented SCSI opcode to for ATA passthrough
 #define SCSIOP_ATA_PASSTHROUGH    0xCC
-
-typedef struct _SCSI_PASS_THROUGH {
-  USHORT  Length;
-  UCHAR  ScsiStatus;
-  UCHAR  PathId;
-  UCHAR  TargetId;
-  UCHAR  Lun;
-  UCHAR  CdbLength;
-  UCHAR  SenseInfoLength;
-  UCHAR  DataIn;
-  ULONG  DataTransferLength;
-  ULONG  TimeOutValue;
-  ULONG/*_PTR*/ DataBufferOffset;
-  ULONG  SenseInfoOffset;
-  UCHAR  Cdb[16];
-} SCSI_PASS_THROUGH, *PSCSI_PASS_THROUGH;
-
-ASSERT_SIZEOF(SCSI_PASS_THROUGH, 44);
-
-
-/////////////////////////////////////////////////////////////////////////////
 
 static int ata_via_scsi_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, unsigned datasize)
 {
@@ -1128,7 +1421,7 @@ static int ata_via_scsi_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char 
   if (!DeviceIoControl(hdevice, IOCTL_SCSI_PASS_THROUGH,
     &sb, size, &sb, size, &num_out, NULL)) {
     long err = GetLastError();
-    if (con->reportataioctl)
+    if (ata_debugmode)
       pout("  ATA via IOCTL_SCSI_PASS_THROUGH failed, Error=%ld\n", err);
     errno = (err == ERROR_INVALID_FUNCTION || err == ERROR_NOT_SUPPORTED ? ENOSYS : EIO);
     return -1;
@@ -1140,7 +1433,7 @@ static int ata_via_scsi_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char 
   if (datasize) {
     if (   num_out != size
         || (sb.ucDataBuf[0] == magic && !nonempty(sb.ucDataBuf+1, datasize-1))) {
-      if (con->reportataioctl) {
+      if (ata_debugmode) {
         pout("  ATA via IOCTL_SCSI_PASS_THROUGH output data missing (%lu)\n", num_out);
         print_ide_regs_io(regs, NULL);
       }
@@ -1150,7 +1443,7 @@ static int ata_via_scsi_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char 
     memcpy(data, sb.ucDataBuf, datasize);
   }
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  ATA via IOCTL_SCSI_PASS_THROUGH suceeded, bytes returned: %lu\n", num_out);
     print_ide_regs_io(regs, NULL);
   }
@@ -1159,47 +1452,12 @@ static int ata_via_scsi_pass_through_ioctl(HANDLE hdevice, IDEREGS * regs, char 
 
 
 /////////////////////////////////////////////////////////////////////////////
-
 // SMART IOCTL via SCSI MINIPORT ioctl
 
 // This function is handled by ATAPI port driver (atapi.sys) or by SCSI
 // miniport driver (via SCSI port driver scsiport.sys).
 // It can be used to skip the missing or broken handling of some SMART
 // command codes (e.g. READ_LOG) in the disk class driver (disk.sys)
-
-#define IOCTL_SCSI_MINIPORT \
-  CTL_CODE(IOCTL_SCSI_BASE, 0x0402, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-
-ASSERT_CONST(IOCTL_SCSI_MINIPORT, 0x04d008);
-
-typedef struct _SRB_IO_CONTROL {
-  ULONG HeaderLength;
-  UCHAR Signature[8];
-  ULONG Timeout;
-  ULONG ControlCode;
-  ULONG ReturnCode;
-  ULONG Length;
-} SRB_IO_CONTROL, *PSRB_IO_CONTROL;
-
-ASSERT_SIZEOF(SRB_IO_CONTROL, 28);
-
-#define FILE_DEVICE_SCSI 0x001b
-
-#define IOCTL_SCSI_MINIPORT_SMART_VERSION               ((FILE_DEVICE_SCSI << 16) + 0x0500)
-#define IOCTL_SCSI_MINIPORT_IDENTIFY                    ((FILE_DEVICE_SCSI << 16) + 0x0501)
-#define IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS          ((FILE_DEVICE_SCSI << 16) + 0x0502)
-#define IOCTL_SCSI_MINIPORT_READ_SMART_THRESHOLDS       ((FILE_DEVICE_SCSI << 16) + 0x0503)
-#define IOCTL_SCSI_MINIPORT_ENABLE_SMART                ((FILE_DEVICE_SCSI << 16) + 0x0504)
-#define IOCTL_SCSI_MINIPORT_DISABLE_SMART               ((FILE_DEVICE_SCSI << 16) + 0x0505)
-#define IOCTL_SCSI_MINIPORT_RETURN_STATUS               ((FILE_DEVICE_SCSI << 16) + 0x0506)
-#define IOCTL_SCSI_MINIPORT_ENABLE_DISABLE_AUTOSAVE     ((FILE_DEVICE_SCSI << 16) + 0x0507)
-#define IOCTL_SCSI_MINIPORT_SAVE_ATTRIBUTE_VALUES       ((FILE_DEVICE_SCSI << 16) + 0x0508)
-#define IOCTL_SCSI_MINIPORT_EXECUTE_OFFLINE_DIAGS       ((FILE_DEVICE_SCSI << 16) + 0x0509)
-#define IOCTL_SCSI_MINIPORT_ENABLE_DISABLE_AUTO_OFFLINE ((FILE_DEVICE_SCSI << 16) + 0x050a)
-#define IOCTL_SCSI_MINIPORT_READ_SMART_LOG              ((FILE_DEVICE_SCSI << 16) + 0x050b)
-#define IOCTL_SCSI_MINIPORT_WRITE_SMART_LOG             ((FILE_DEVICE_SCSI << 16) + 0x050c)
-
-/////////////////////////////////////////////////////////////////////////////
 
 static int ata_via_scsi_miniport_smart_ioctl(HANDLE hdevice, IDEREGS * regs, char * data, int datasize)
 {
@@ -1284,7 +1542,7 @@ static int ata_via_scsi_miniport_smart_ioctl(HANDLE hdevice, IDEREGS * regs, cha
   if (!DeviceIoControl(hdevice, IOCTL_SCSI_MINIPORT,
     &sb, size, &sb, size, &num_out, NULL)) {
     long err = GetLastError();
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  IOCTL_SCSI_MINIPORT_%s failed, Error=%ld\n", name, err);
       print_ide_regs_io(regs, NULL);
     }
@@ -1294,7 +1552,7 @@ static int ata_via_scsi_miniport_smart_ioctl(HANDLE hdevice, IDEREGS * regs, cha
 
   // Check result
   if (sb.srbc.ReturnCode) {
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  IOCTL_SCSI_MINIPORT_%s failed, ReturnCode=0x%08lx\n", name, sb.srbc.ReturnCode);
       print_ide_regs_io(regs, NULL);
     }
@@ -1303,7 +1561,7 @@ static int ata_via_scsi_miniport_smart_ioctl(HANDLE hdevice, IDEREGS * regs, cha
   }
 
   if (sb.params.out.DriverStatus.bDriverError) {
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  IOCTL_SCSI_MINIPORT_%s failed, DriverError=0x%02x, IDEError=0x%02x\n", name,
         sb.params.out.DriverStatus.bDriverError, sb.params.out.DriverStatus.bIDEError);
       print_ide_regs_io(regs, NULL);
@@ -1312,7 +1570,7 @@ static int ata_via_scsi_miniport_smart_ioctl(HANDLE hdevice, IDEREGS * regs, cha
     return -1;
   }
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  IOCTL_SCSI_MINIPORT_%s suceeded, bytes returned: %lu (buffer %lu)\n", name,
       num_out, sb.params.out.cBufferSize);
     print_ide_regs_io(regs, (code == IOCTL_SCSI_MINIPORT_RETURN_STATUS ?
@@ -1322,7 +1580,7 @@ static int ata_via_scsi_miniport_smart_ioctl(HANDLE hdevice, IDEREGS * regs, cha
   if (datasize > 0)
     memcpy(data, sb.params.out.bBuffer, datasize);
   else if (datasize == 0 && code == IOCTL_SCSI_MINIPORT_RETURN_STATUS)
-    *regs = *(const IDEREGS *)(sb.params.out.bBuffer);
+    memcpy(regs, sb.params.out.bBuffer, sizeof(IDEREGS));
 
   return 0;
 }
@@ -1359,7 +1617,7 @@ static int ata_via_3ware_miniport_ioctl(HANDLE hdevice, IDEREGS * regs, char * d
   if (!DeviceIoControl(hdevice, IOCTL_SCSI_MINIPORT,
     &sb, sizeof(sb), &sb, sizeof(sb), &num_out, NULL)) {
     long err = GetLastError();
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  ATA via IOCTL_SCSI_MINIPORT failed, Error=%ld\n", err);
       print_ide_regs_io(regs, NULL);
     }
@@ -1368,7 +1626,7 @@ static int ata_via_3ware_miniport_ioctl(HANDLE hdevice, IDEREGS * regs, char * d
   }
 
   if (sb.srbc.ReturnCode) {
-    if (con->reportataioctl) {
+    if (ata_debugmode) {
       pout("  ATA via IOCTL_SCSI_MINIPORT failed, ReturnCode=0x%08lx\n", sb.srbc.ReturnCode);
       print_ide_regs_io(regs, NULL);
     }
@@ -1380,7 +1638,7 @@ static int ata_via_3ware_miniport_ioctl(HANDLE hdevice, IDEREGS * regs, char * d
   if (datasize > 0)
     memcpy(data, sb.buffer, datasize);
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  ATA via IOCTL_SCSI_MINIPORT suceeded, bytes returned: %lu\n", num_out);
     print_ide_regs_io(regs, &sb.regs);
   }
@@ -1410,18 +1668,18 @@ static int update_3ware_devicemap_ioctl(HANDLE hdevice)
   if (!DeviceIoControl(hdevice, IOCTL_SCSI_MINIPORT,
     &srbc, sizeof(srbc), &srbc, sizeof(srbc), &num_out, NULL)) {
     long err = GetLastError();
-    if (con->reportataioctl)
+    if (ata_debugmode)
       pout("  UPDATE DEVICEMAP via IOCTL_SCSI_MINIPORT failed, Error=%ld\n", err);
     errno = (err == ERROR_INVALID_FUNCTION ? ENOSYS : EIO);
     return -1;
   }
   if (srbc.ReturnCode) {
-    if (con->reportataioctl)
+    if (ata_debugmode)
       pout("  UPDATE DEVICEMAP via IOCTL_SCSI_MINIPORT failed, ReturnCode=0x%08lx\n", srbc.ReturnCode);
     errno = EIO;
     return -1;
   }
-  if (con->reportataioctl > 1)
+  if (ata_debugmode > 1)
     pout("  UPDATE DEVICEMAP via IOCTL_SCSI_MINIPORT suceeded\n");
   return 0;
 }
@@ -1566,7 +1824,7 @@ bool win_tw_cli_device::open()
     // tw_cli/cx/py => read output from "tw_cli /cx/py show all"
     char cmd[100];
     snprintf(cmd, sizeof(cmd), "tw_cli /%s show all", name+n1);
-    if (con->reportataioctl > 1)
+    if (ata_debugmode > 1)
       pout("%s: Run: \"%s\"\n", name, cmd);
     size = run_cmd(cmd, buffer, sizeof(buffer));
   }
@@ -1574,7 +1832,7 @@ bool win_tw_cli_device::open()
     return set_err(EINVAL);
   }
 
-  if (con->reportataioctl > 1)
+  if (ata_debugmode > 1)
     pout("%s: Read %d bytes\n", name, size);
   if (size <= 0)
     return set_err(ENOENT);
@@ -1582,7 +1840,7 @@ bool win_tw_cli_device::open()
     return set_err(EIO);
 
   buffer[size] = 0;
-  if (con->reportataioctl > 1)
+  if (ata_debugmode > 1)
     pout("[\n%.100s%s\n]\n", buffer, (size>100?"...":""));
 
   // Fake identify sector
@@ -1599,7 +1857,6 @@ bool win_tw_cli_device::open()
     id->words047_079[60-47] = (unsigned short)(nblocks    ); // secs_16
     id->words047_079[61-47] = (unsigned short)(nblocks>>16); // secs_32
   }
-  id->major_rev_num = 0x1<<3; // ATA-3
   id->command_set_1 = 0x0001; id->command_set_2 = 0x4000; // SMART supported, words 82,83 valid
   id->cfs_enable_1  = 0x0001; id->csf_default   = 0x4000; // SMART enabled, words 85,87 valid
 
@@ -1674,20 +1931,6 @@ int win_tw_cli_device::ata_command_interface(smart_command_set command, int /*se
         break;
       memcpy(data, &m_smart_buf, 512);
       return 0;
-    case READ_THRESHOLDS:
-      if (!m_smart_valid)
-        break;
-      // Fake zero thresholds
-      {
-        const ata_smart_values   * sv = &m_smart_buf;
-        ata_smart_thresholds_pvt * tr = (ata_smart_thresholds_pvt *)data;
-        memset(tr, 0, 512);
-        // TODO: Indicate missing thresholds in ataprint.cpp:PrintSmartAttribWithThres()
-        // (ATA_SMART_READ_THRESHOLDS is marked obsolete since ATA-5)
-        for (int i = 0; i < NUMBER_ATA_SMART_ATTRIBUTES; i++)
-          tr->chksum -= tr->thres_entries[i].id = sv->vendor_attributes[i].id;
-      }
-      return 0;
     case ENABLE:
     case STATUS:
     case STATUS_CHECK: // Fake "good" SMART status
@@ -1702,76 +1945,7 @@ int win_tw_cli_device::ata_command_interface(smart_command_set command, int /*se
 
 
 /////////////////////////////////////////////////////////////////////////////
-
 // IOCTL_STORAGE_QUERY_PROPERTY
-
-#define FILE_DEVICE_MASS_STORAGE    0x0000002d
-#define IOCTL_STORAGE_BASE          FILE_DEVICE_MASS_STORAGE
-#define FILE_ANY_ACCESS             0
-
-#define IOCTL_STORAGE_QUERY_PROPERTY \
-  CTL_CODE(IOCTL_STORAGE_BASE, 0x0500, METHOD_BUFFERED, FILE_ANY_ACCESS)
-
-typedef enum _STORAGE_BUS_TYPE {
-  BusTypeUnknown      = 0x00,
-  BusTypeScsi         = 0x01,
-  BusTypeAtapi        = 0x02,
-  BusTypeAta          = 0x03,
-  BusType1394         = 0x04,
-  BusTypeSsa          = 0x05,
-  BusTypeFibre        = 0x06,
-  BusTypeUsb          = 0x07,
-  BusTypeRAID         = 0x08,
-  BusTypeiScsi        = 0x09,
-  BusTypeSas          = 0x0A,
-  BusTypeSata         = 0x0B,
-  BusTypeSd           = 0x0C,
-  BusTypeMmc          = 0x0D,
-  BusTypeMax          = 0x0E,
-  BusTypeMaxReserved  = 0x7F
-} STORAGE_BUS_TYPE, *PSTORAGE_BUS_TYPE;
-
-typedef struct _STORAGE_DEVICE_DESCRIPTOR {
-  ULONG Version;
-  ULONG Size;
-  UCHAR DeviceType;
-  UCHAR DeviceTypeModifier;
-  BOOLEAN RemovableMedia;
-  BOOLEAN CommandQueueing;
-  ULONG VendorIdOffset;
-  ULONG ProductIdOffset;
-  ULONG ProductRevisionOffset;
-  ULONG SerialNumberOffset;
-  STORAGE_BUS_TYPE BusType;
-  ULONG RawPropertiesLength;
-  UCHAR RawDeviceProperties[1];
-} STORAGE_DEVICE_DESCRIPTOR, *PSTORAGE_DEVICE_DESCRIPTOR;
-
-typedef enum _STORAGE_QUERY_TYPE {
-  PropertyStandardQuery = 0,
-  PropertyExistsQuery,
-  PropertyMaskQuery,
-  PropertyQueryMaxDefined
-} STORAGE_QUERY_TYPE, *PSTORAGE_QUERY_TYPE;
-
-typedef enum _STORAGE_PROPERTY_ID {
-  StorageDeviceProperty = 0,
-  StorageAdapterProperty,
-  StorageDeviceIdProperty,
-  StorageDeviceUniqueIdProperty,
-  StorageDeviceWriteCacheProperty,
-  StorageMiniportProperty,
-  StorageAccessAlignmentProperty
-} STORAGE_PROPERTY_ID, *PSTORAGE_PROPERTY_ID;
-
-typedef struct _STORAGE_PROPERTY_QUERY {
-  STORAGE_PROPERTY_ID PropertyId;
-  STORAGE_QUERY_TYPE QueryType;
-  UCHAR AdditionalParameters[1];
-} STORAGE_PROPERTY_QUERY, *PSTORAGE_PROPERTY_QUERY;
-
-
-/////////////////////////////////////////////////////////////////////////////
 
 union STORAGE_DEVICE_DESCRIPTOR_DATA {
   STORAGE_DEVICE_DESCRIPTOR desc;
@@ -1789,22 +1963,22 @@ static int storage_query_property_ioctl(HANDLE hdevice, STORAGE_DEVICE_DESCRIPTO
   DWORD num_out;
   if (!DeviceIoControl(hdevice, IOCTL_STORAGE_QUERY_PROPERTY,
     &query, sizeof(query), data, sizeof(*data), &num_out, NULL)) {
-    if (con->reportataioctl > 1 || con->reportscsiioctl > 1)
+    if (ata_debugmode > 1 || scsi_debugmode > 1)
       pout("  IOCTL_STORAGE_QUERY_PROPERTY failed, Error=%ld\n", GetLastError());
     errno = ENOSYS;
     return -1;
   }
 
-  if (con->reportataioctl > 1 || con->reportscsiioctl > 1) {
+  if (ata_debugmode > 1 || scsi_debugmode > 1) {
     pout("  IOCTL_STORAGE_QUERY_PROPERTY returns:\n"
          "    Vendor:   \"%s\"\n"
          "    Product:  \"%s\"\n"
          "    Revision: \"%s\"\n"
          "    Removable: %s\n"
          "    BusType:   0x%02x\n",
-         (data->desc.VendorIdOffset        ? data->raw+data->desc.VendorIdOffset : ""),
-         (data->desc.ProductIdOffset       ? data->raw+data->desc.ProductIdOffset : ""),
-         (data->desc.ProductRevisionOffset ? data->raw+data->desc.ProductRevisionOffset : ""),
+         (data->desc.VendorIdOffset        ? data->raw+data->desc.VendorIdOffset : "(null)"),
+         (data->desc.ProductIdOffset       ? data->raw+data->desc.ProductIdOffset : "(null)"),
+         (data->desc.ProductRevisionOffset ? data->raw+data->desc.ProductRevisionOffset : "(null)"),
          (data->desc.RemovableMedia? "Yes":"No"), data->desc.BusType
     );
   }
@@ -1813,22 +1987,7 @@ static int storage_query_property_ioctl(HANDLE hdevice, STORAGE_DEVICE_DESCRIPTO
 
 
 /////////////////////////////////////////////////////////////////////////////
-
 // IOCTL_STORAGE_PREDICT_FAILURE
-
-#define IOCTL_STORAGE_PREDICT_FAILURE \
-  CTL_CODE(IOCTL_STORAGE_BASE, 0x0440, METHOD_BUFFERED, FILE_ANY_ACCESS)
-
-typedef struct _STORAGE_PREDICT_FAILURE {
-  ULONG  PredictFailure;
-  UCHAR  VendorSpecific[512];
-} STORAGE_PREDICT_FAILURE, *PSTORAGE_PREDICT_FAILURE;
-
-ASSERT_SIZEOF(STORAGE_PREDICT_FAILURE, 4+512);
-
-
-/////////////////////////////////////////////////////////////////////////////
-
 
 // Call IOCTL_STORAGE_PREDICT_FAILURE, return PredictFailure value
 // or -1 on error, opionally return VendorSpecific data.
@@ -1842,13 +2001,13 @@ static int storage_predict_failure_ioctl(HANDLE hdevice, char * data = 0)
   DWORD num_out;
   if (!DeviceIoControl(hdevice, IOCTL_STORAGE_PREDICT_FAILURE,
     0, 0, &pred, sizeof(pred), &num_out, NULL)) {
-    if (con->reportataioctl > 1)
+    if (ata_debugmode > 1)
       pout("  IOCTL_STORAGE_PREDICT_FAILURE failed, Error=%ld\n", GetLastError());
     errno = ENOSYS;
     return -1;
   }
 
-  if (con->reportataioctl > 1) {
+  if (ata_debugmode > 1) {
     pout("  IOCTL_STORAGE_PREDICT_FAILURE returns:\n"
          "    PredictFailure: 0x%08lx\n"
          "    VendorSpecific: 0x%02x,0x%02x,0x%02x,...,0x%02x\n",
@@ -1865,31 +2024,52 @@ static int storage_predict_failure_ioctl(HANDLE hdevice, char * data = 0)
 
 /////////////////////////////////////////////////////////////////////////////
 
+// Return true if Intel ICHxR RAID volume
+static bool is_intel_raid_volume(const STORAGE_DEVICE_DESCRIPTOR_DATA * data)
+{
+  if (!(data->desc.VendorIdOffset && data->desc.ProductIdOffset))
+    return false;
+  const char * vendor = data->raw + data->desc.VendorIdOffset;
+  if (!(!strnicmp(vendor, "Intel", 5) && strspn(vendor+5, " ") == strlen(vendor+5)))
+    return false;
+  if (strnicmp(data->raw + data->desc.ProductIdOffset, "Raid ", 5))
+    return false;
+  return true;
+}
+
 // get DEV_* for open handle
 static win_dev_type get_controller_type(HANDLE hdevice, bool admin, GETVERSIONINPARAMS_EX * ata_version_ex)
 {
-  // Try SMART_GET_VERSION first to detect ATA SMART support
-  // for drivers reporting BusTypeScsi (3ware)
-  if (admin && smart_get_version(hdevice, ata_version_ex) >= 0)
-    return DEV_ATA;
-
   // Get BusType from device descriptor
   STORAGE_DEVICE_DESCRIPTOR_DATA data;
   if (storage_query_property_ioctl(hdevice, &data))
     return DEV_UNKNOWN;
 
-  switch (data.desc.BusType) {
+  // Newer BusType* values are missing in older includes
+  switch ((int)data.desc.BusType) {
     case BusTypeAta:
-    case BusTypeSata:
+    case 0x0b: // BusTypeSata
       if (ata_version_ex)
         memset(ata_version_ex, 0, sizeof(*ata_version_ex));
       return DEV_ATA;
+
     case BusTypeScsi:
-    case BusTypeiScsi:
-    case BusTypeSas:
+    case BusTypeRAID:
+      // Intel ICHxR RAID volume: reports SMART_GET_VERSION but does not support SMART_*
+      if (is_intel_raid_volume(&data))
+        return DEV_SCSI;
+      // LSI/3ware RAID volume: supports SMART_*
+      if (admin && smart_get_version(hdevice, ata_version_ex) >= 0)
+        return DEV_ATA;
       return DEV_SCSI;
+
+    case 0x09: // BusTypeiScsi
+    case 0x0a: // BusTypeSas
+      return DEV_SCSI;
+
     case BusTypeUsb:
       return DEV_USB;
+
     default:
       return DEV_UNKNOWN;
   }
@@ -1909,7 +2089,7 @@ static win_dev_type get_controller_type(const char * path, GETVERSIONINPARAMS_EX
     if (h == INVALID_HANDLE_VALUE)
       return DEV_UNKNOWN;
   }
-  if (con->reportataioctl > 1 || con->reportscsiioctl > 1)
+  if (ata_debugmode > 1 || scsi_debugmode > 1)
     pout(" %s: successfully opened%s\n", path, (!admin ? " (without admin rights)" :""));
   win_dev_type type = get_controller_type(h, admin, ata_version_ex);
   CloseHandle(h);
@@ -1945,11 +2125,35 @@ static int get_identify_from_device_property(HANDLE hdevice, ata_identify_device
     return -1;
 
   memset(id, 0, sizeof(*id));
-  if (data.desc.ProductIdOffset)
-    copy_swapped(id->model, data.raw+data.desc.ProductIdOffset, sizeof(id->model));
+
+  // Some drivers split ATA model string into VendorId and ProductId,
+  // others return it as ProductId only.
+  char model[sizeof(id->model) + 1] = "";
+
+  unsigned i = 0;
+  if (data.desc.VendorIdOffset) {
+    for ( ;i < sizeof(model)-1 && data.raw[data.desc.VendorIdOffset+i]; i++)
+      model[i] = data.raw[data.desc.VendorIdOffset+i];
+  }
+
+  if (data.desc.ProductIdOffset) {
+    while (i > 1 && model[i-2] == ' ') // Keep last blank from VendorId
+      i--;
+    // Ignore VendorId "ATA"
+    if (i <= 4 && !strncmp(model, "ATA", 3) && (i == 3 || model[3] == ' '))
+      i = 0;
+    for (unsigned j = 0; i < sizeof(model)-1 && data.raw[data.desc.ProductIdOffset+j]; i++, j++)
+      model[i] = data.raw[data.desc.ProductIdOffset+j];
+  }
+
+  while (i > 0 && model[i-1] == ' ')
+    i--;
+  model[i] = 0;
+  copy_swapped(id->model, model, sizeof(id->model));
+
   if (data.desc.ProductRevisionOffset)
     copy_swapped(id->fw_rev, data.raw+data.desc.ProductRevisionOffset, sizeof(id->fw_rev));
-  id->major_rev_num = 0x1<<3; // ATA-3
+
   id->command_set_1 = 0x0001; id->command_set_2 = 0x4000; // SMART supported, words 82,83 valid
   id->cfs_enable_1  = 0x0001; id->csf_default   = 0x4000; // SMART enabled, words 85,87 valid
   return 0;
@@ -1959,130 +2163,131 @@ static int get_identify_from_device_property(HANDLE hdevice, ata_identify_device
 /////////////////////////////////////////////////////////////////////////////
 // USB ID detection using WMI
 
-// Run a command, split stdout into lines.
-// Return number of lines read, -1 on error.
-static int run_cmd(std::vector<std::string> & lines, const char * cmd, ...)
+// Return true if STR starts with PREFIX.
+static inline bool str_starts_with(const std::string & str, const char * prefix)
 {
-  lines.clear();
-
-  va_list ap; va_start(ap, cmd);
-  std::string cmdline = vstrprintf(cmd, ap);
-  va_end(ap);
-
-  if (con->reportscsiioctl > 1)
-    pout("Run: \"%s\"\n", cmdline.c_str());
-
-  char buffer[16*1024];
-  int size = run_cmd(cmdline.c_str(), buffer, sizeof(buffer));
-
-  if (con->reportscsiioctl > 1)
-    pout("Read %d bytes\n", size);
-  if (!(0 < size && size < (int)sizeof(buffer)-1))
-    return -1;
-
-  buffer[size] = 0;
-
-  for (int i = 0; buffer[i]; ) {
-      int len = strcspn(buffer+i, "\r\n");
-      lines.push_back(std::string(buffer+i, len));
-      i += len;
-      i += strspn(buffer+i, "\r\n");
-  }
-  if (con->reportscsiioctl > 1) {
-    for (unsigned i = 0; i < lines.size(); i++)
-      printf("'%s'\n", lines[i].c_str());
-  }
-  return lines.size();
-}
-
-// Quote string for WMI
-static std::string wmi_quote(const char * s, int len)
-{
-  std::string r;
-  for (int i = 0; i < len; i++) {
-    char c = s[i];
-    if (c == '\\')
-      r += '\\';
-    r += c;
-  }
-  return r;
+  return !strncmp(str.c_str(), prefix, strlen(prefix));
 }
 
 // Get USB ID for a physical drive number
 static bool get_usb_id(int drive, unsigned short & vendor_id, unsigned short & product_id)
 {
-  // Get device name
-  std::vector<std::string> result;
-  if (run_cmd(result,
-        "wmic PATH Win32_DiskDrive WHERE DeviceID=\"\\\\\\\\.\\\\PHYSICALDRIVE%d\" GET Model",
-        drive) != 2)
+  bool debug = (scsi_debugmode > 1);
+
+  wbem_services ws;
+  if (!ws.connect()) {
+    if (debug)
+      pout("WMI connect failed\n");
     return false;
-
-  std::string name = result[1];
-
-  // Get USB_CONTROLLER -> DEVICE associations
-  std::vector<std::string> assoc;
-  int n = run_cmd(assoc, "wmic PATH Win32_USBControllerDevice GET Antecedent,Dependent");
-  if (n < 2)
-    return false;
-
-  regular_expression regex("^([^ ]+) .*Win32_PnPEntity.DeviceID=\"(USBSTOR\\\\[^\"]*)\" *$",
-                           REG_EXTENDED);
-  if (regex.empty()) // TODO: throw in constructor?
-    return false;
-
-  int usbstoridx = -1;
-  std::string usbcontr;
-  for (int i = 2; i < n; i++) {
-    // Find next 'USB_CONTROLLER  USBSTORAGE_DEVICE' pair
-    regmatch_t match[3];
-    const char * s = assoc[i].c_str();
-    if (!regex.execute(s, 3, match))
-      continue;
-
-    // USBSTOR device found, compare Name
-    if (run_cmd(result,
-          "wmic PATH Win32_PnPEntity WHERE DeviceID=\"%s\" GET Name",
-          wmi_quote(s + match[2].rm_so, match[2].rm_eo - match[2].rm_so).c_str()
-          ) != 2)
-      continue;
-    if (result[1] != name)
-      continue;
-
-    // Name must be uniqe
-    if (usbstoridx >= 0)
-      return false;
-
-    usbstoridx = i;
-    usbcontr.assign(s + match[1].rm_so, match[1].rm_eo - match[1].rm_so);
   }
 
-  // Found ?
-  if (usbstoridx <= 0)
+  // Get device name
+  wbem_object wo;
+  if (!ws.query1(wo, "SELECT Model FROM Win32_DiskDrive WHERE DeviceID=\"\\\\\\\\.\\\\PHYSICALDRIVE%d\"", drive))
     return false;
 
-  // The entry preceding USBSTOR should be the USB bridge device
-  regex.compile("^([^ ]+) .*Win32_PnPEntity.DeviceID=\"USB\\\\VID_(....&PID_....)[^\"]*\" *$",
-                REG_EXTENDED);
-  if (regex.empty())
-    return false;
-  regmatch_t match[3];
-  const char * s = assoc[usbstoridx-1].c_str();
-  if (!regex.execute(s, 3, match))
+  std::string name = wo.get_str("Model");
+  if (debug)
+    pout("PhysicalDrive%d, \"%s\":\n", drive, name.c_str());
+
+  // Get USB_CONTROLLER -> DEVICE associations
+  wbem_enumerator we;
+  if (!ws.query(we, "SELECT Antecedent,Dependent FROM Win32_USBControllerDevice"))
     return false;
 
-  // Both devices must be associated to same controller
-  if (usbcontr != std::string(s + match[1].rm_so, match[1].rm_eo - match[1].rm_so))
+  unsigned short usb_venid = 0, prev_usb_venid = 0;
+  unsigned short usb_proid = 0, prev_usb_proid = 0;
+  std::string prev_usb_ant;
+  std::string prev_ant, ant, dep;
+
+  const regular_expression regex("^.*PnPEntity\\.DeviceID=\"([^\"]*)\"", REG_EXTENDED);
+
+  while (we.next(wo)) {
+    prev_ant = ant;
+    // Find next 'USB_CONTROLLER, DEVICE' pair
+    ant = wo.get_str("Antecedent");
+    dep = wo.get_str("Dependent");
+
+    if (debug && ant != prev_ant)
+      pout(" %s:\n", ant.c_str());
+
+    // Extract DeviceID
+    regmatch_t match[2];
+    if (!(regex.execute(dep.c_str(), 2, match) && match[1].rm_so >= 0)) {
+      if (debug)
+        pout("  | (\"%s\")\n", dep.c_str());
+      continue;
+    }
+
+    std::string devid(dep.c_str()+match[1].rm_so, match[1].rm_eo-match[1].rm_so);
+
+    if (str_starts_with(devid, "USB\\\\VID_")) {
+      // USB bridge entry, save CONTROLLER, ID
+      int nc = -1;
+      if (!(sscanf(devid.c_str(), "USB\\\\VID_%4hx&PID_%4hx%n",
+            &prev_usb_venid, &prev_usb_proid, &nc) == 2 && nc == 9+4+5+4)) {
+        prev_usb_venid = prev_usb_proid = 0;
+      }
+      prev_usb_ant = ant;
+      if (debug)
+        pout("  +-> \"%s\" [0x%04x:0x%04x]\n", devid.c_str(), prev_usb_venid, prev_usb_proid);
+      continue;
+    }
+    else if (str_starts_with(devid, "USBSTOR\\\\")) {
+      // USBSTOR device found
+      if (debug)
+        pout("  +--> \"%s\"\n", devid.c_str());
+
+      // Retrieve name
+      wbem_object wo2;
+      if (!ws.query1(wo2, "SELECT Name FROM Win32_PnPEntity WHERE DeviceID=\"%s\"", devid.c_str()))
+        continue;
+      std::string name2 = wo2.get_str("Name");
+
+      // Continue if not name of physical disk drive
+      if (name2 != name) {
+        if (debug)
+          pout("  +---> (\"%s\")\n", name2.c_str());
+        continue;
+      }
+
+      // Fail if previos USB bridge is associated to other controller or ID is unknown
+      if (!(ant == prev_usb_ant && prev_usb_venid)) {
+        if (debug)
+          pout("  +---> \"%s\" (Error: No USB bridge found)\n", name2.c_str());
+        return false;
+      }
+
+      // Handle multiple devices with same name
+      if (usb_venid) {
+        // Fail if multiple devices with same name have different USB bridge types
+        if (!(usb_venid == prev_usb_venid && usb_proid == prev_usb_proid)) {
+          if (debug)
+            pout("  +---> \"%s\" (Error: More than one USB ID found)\n", name2.c_str());
+          return false;
+        }
+      }
+
+      // Found
+      usb_venid = prev_usb_venid;
+      usb_proid = prev_usb_proid;
+      if (debug)
+        pout("  +===> \"%s\" [0x%04x:0x%04x]\n", name2.c_str(), usb_venid, usb_proid);
+
+      // Continue to check for duplicate names ...
+    }
+    else {
+      if (debug)
+        pout("  |   \"%s\"\n", devid.c_str());
+    }
+  }
+
+  if (!usb_venid)
     return false;
 
-  // Parse USB ID
-  int nc = -1;
-  if (!(sscanf(s + match[2].rm_so, "%4hx&PID_%4hx%n",
-               &vendor_id, &product_id, &nc) == 2 && nc == 4+5+4))
-    return false;
+  vendor_id = usb_venid;
+  product_id = usb_proid;
 
-  if (con->reportscsiioctl > 1)
-    pout("USB ID = 0x%04x:0x%04x\n", vendor_id, product_id);
   return true;
 }
 
@@ -2095,35 +2300,27 @@ static bool get_usb_id(int drive, unsigned short & vendor_id, unsigned short & p
 
 static int get_device_power_state(HANDLE hdevice)
 {
-  static HINSTANCE h_kernel_dll = 0;
+  static bool unsupported = false;
+  if (unsupported) {
+    errno = ENOSYS;
+    return -1;
+  }
+
 #ifdef __CYGWIN__
   static DWORD kernel_dll_pid = 0;
 #endif
   static BOOL (WINAPI * GetDevicePowerState_p)(HANDLE, BOOL *) = 0;
-
-  BOOL state = TRUE;
 
   if (!GetDevicePowerState_p
 #ifdef __CYGWIN__
       || kernel_dll_pid != GetCurrentProcessId() // detect fork()
 #endif
      ) {
-    if (h_kernel_dll == INVALID_HANDLE_VALUE) {
-      errno = ENOSYS;
-      return -1;
-    }
-    if (!(h_kernel_dll = LoadLibraryA("KERNEL32.DLL"))) {
-      pout("Cannot load KERNEL32.DLL, Error=%ld\n", GetLastError());
-      h_kernel_dll = (HINSTANCE)INVALID_HANDLE_VALUE;
-      errno = ENOSYS;
-      return -1;
-    }
     if (!(GetDevicePowerState_p = (BOOL (WINAPI *)(HANDLE, BOOL *))
-                                  GetProcAddress(h_kernel_dll, "GetDevicePowerState"))) {
-      if (con->reportataioctl)
+          GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetDevicePowerState"))) {
+      if (ata_debugmode)
         pout("  GetDevicePowerState() not found, Error=%ld\n", GetLastError());
-      FreeLibrary(h_kernel_dll);
-      h_kernel_dll = (HINSTANCE)INVALID_HANDLE_VALUE;
+      unsupported = true;
       errno = ENOSYS;
       return -1;
     }
@@ -2132,9 +2329,10 @@ static int get_device_power_state(HANDLE hdevice)
 #endif
   }
 
+  BOOL state = TRUE;
   if (!GetDevicePowerState_p(hdevice, &state)) {
     long err = GetLastError();
-    if (con->reportataioctl)
+    if (ata_debugmode)
       pout("  GetDevicePowerState() failed, Error=%ld\n", err);
     errno = (err == ERROR_INVALID_FUNCTION ? ENOSYS : EIO);
     // TODO: This may not work as expected on transient errors,
@@ -2142,7 +2340,7 @@ static int get_device_power_state(HANDLE hdevice)
     return -1;
   }
 
-  if (con->reportataioctl > 1)
+  if (ata_debugmode > 1)
     pout("  GetDevicePowerState() succeeded, state=%d\n", state);
   return state;
 }
@@ -2150,6 +2348,7 @@ static int get_device_power_state(HANDLE hdevice)
 
 /////////////////////////////////////////////////////////////////////////////
 
+#if WIN9X_SUPPORT
 // Print SMARTVSD error message, return errno
 
 static int smartvsd_error()
@@ -2197,6 +2396,7 @@ static int smartvsd_error()
   }
 }
 
+#endif // WIN9X_SUPPORT
 
 // Get default ATA device options
 
@@ -2241,6 +2441,8 @@ win_ata_device::win_ata_device(smart_interface * intf, const char * dev_name, co
 : smart_device(intf, dev_name, "ata", req_type),
   m_usr_options(false),
   m_admin(false),
+  m_id_is_cached(false),
+  m_is_3ware(false),
   m_drive(0),
   m_port(-1),
   m_smartver_state(0)
@@ -2289,7 +2491,6 @@ bool win_ata_device::open()
 bool win_ata_device::open(int phydrive, int logdrive, const char * options, int port)
 {
   // path depends on Windows Version
-  bool win9x = is_win9x(); // TODO: Member variable
   char devpath[30];
   if (win9x && 0 <= phydrive && phydrive <= 7)
     // Use patched "smartvse.vxd" for drives 4-7, see INSTALL file for details
@@ -2319,9 +2520,12 @@ bool win_ata_device::open(int phydrive, int logdrive, const char * options, int 
   }
   if (h == INVALID_HANDLE_VALUE) {
     long err = GetLastError();
-    pout("Cannot open device %s, Error=%ld\n", devpath, err);
+#if WIN9X_SUPPORT
+    if (win9x && phydrive <= 3 && err == ERROR_FILE_NOT_FOUND)
+      smartvsd_error();
+#endif
     if (err == ERROR_FILE_NOT_FOUND)
-      set_err((win9x && phydrive <= 3 ? smartvsd_error() : ENOENT), "%s: not found", devpath);
+      set_err(ENOENT, "%s: not found", devpath);
     else if (err == ERROR_ACCESS_DENIED)
       set_err(EACCES, "%s: access denied", devpath);
     else
@@ -2330,7 +2534,16 @@ bool win_ata_device::open(int phydrive, int logdrive, const char * options, int 
   }
   set_fh(h);
 
-  if (con->reportataioctl > 1)
+  // Warn once if admin rights are missing
+  if (!m_admin) {
+    static bool noadmin_warning = false;
+    if (!noadmin_warning) {
+      pout("Warning: Limited functionality due to missing admin rights\n");
+      noadmin_warning = true;
+    }
+  }
+
+  if (ata_debugmode > 1)
     pout("%s: successfully opened%s\n", devpath, (!m_admin ? " (without admin rights)" :""));
 
   m_usr_options = false;
@@ -2355,13 +2568,16 @@ bool win_ata_device::open(int phydrive, int logdrive, const char * options, int 
   // Win9X/ME: Get drive map
   // RAID: Get port map
   GETVERSIONINPARAMS_EX vers_ex;
-  int devmap = smart_get_version(h, (port >= 0 ? &vers_ex : 0));
+  int devmap = smart_get_version(h, &vers_ex);
+
+  // 3ware RAID if vendor id present
+  m_is_3ware = (vers_ex.wIdentifier == SMART_VENDOR_3WARE);
 
   unsigned long portmap = 0;
   if (port >= 0 && devmap >= 0) {
     // 3ware RAID: check vendor id
-    if (vers_ex.wIdentifier != SMART_VENDOR_3WARE) {
-      pout("SMART_GET_VERSION returns unknown Identifier = %04x\n"
+    if (!m_is_3ware) {
+      pout("SMART_GET_VERSION returns unknown Identifier = 0x%04x\n"
            "This is no 3ware 9000 controller or driver has no SMART support.\n",
            vers_ex.wIdentifier);
       devmap = -1;
@@ -2415,6 +2631,8 @@ bool win_ata_device::open(int phydrive, int logdrive, const char * options, int 
 }
 
 
+#if WIN9X_SUPPORT
+
 // Scan for ATA drives on Win9x/ME
 
 bool win9x_smart_interface::ata_scan(smart_device_list & devlist)
@@ -2424,7 +2642,7 @@ bool win9x_smart_interface::ata_scan(smart_device_list & devlist)
   HANDLE h = CreateFileA(devpath, GENERIC_READ|GENERIC_WRITE,
     FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, 0);
   if (h == INVALID_HANDLE_VALUE) {
-    if (con->reportataioctl > 1)
+    if (ata_debugmode > 1)
       pout(" %s: Open failed, Error=%ld\n", devpath, GetLastError());
     return true; // SMARTVSD.VXD missing or no ATA devices
   }
@@ -2447,43 +2665,7 @@ bool win9x_smart_interface::ata_scan(smart_device_list & devlist)
   return true;
 }
 
-
-// Scan for ATA drives
-
-bool winnt_smart_interface::ata_scan(smart_device_list & devlist)
-{
-  const int max_raid = 2;
-  bool raid_seen[max_raid] = {false, false};
-
-  char name[20];
-  for (int i = 0; i <= 9; i++) {
-    GETVERSIONINPARAMS_EX vers_ex;
-    if (get_phy_drive_type(i, &vers_ex) != DEV_ATA)
-      continue;
-
-    // Interpret RAID drive map if present
-    if (vers_ex.wIdentifier == SMART_VENDOR_3WARE) {
-      // Skip if more than 2 controllers or logical drive from this controller already seen
-      if (vers_ex.wControllerId >= max_raid || raid_seen[vers_ex.wControllerId])
-        continue;
-      raid_seen[vers_ex.wControllerId] = true;
-      // Add physical drives
-      for (int pi = 0; pi < 32; pi++) {
-        if (vers_ex.dwDeviceMapEx & (1L << pi)) {
-            sprintf(name, "/dev/sd%c,%u", 'a'+i, pi);
-            devlist.push_back( new win_ata_device(this, name, "ata") );
-        }
-      }
-      continue;
-    }
-
-    // Driver supports SMART_GET_VERSION or STORAGE_QUERY_PROPERTY returns ATA/SATA
-    sprintf(name, "/dev/sd%c", 'a'+i);
-    devlist.push_back( new win_ata_device(this, name, "ata") );
-  }
-
-  return true;
-}
+#endif // WIN9X_SUPPORT
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -2499,6 +2681,12 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
     true) // ata_48bit_support
   )
     return false;
+
+  // 3ware RAID: SMART DISABLE without port number disables SMART functions
+  if (   m_is_3ware && m_port < 0
+      && in.in_regs.command == ATA_SMART_CMD
+      && in.in_regs.features == ATA_SMART_DISABLE)
+    return set_err(ENOSYS, "SMART DISABLE requires 3ware port number");
 
   // Determine ioctl functions valid for this ATA cmd
   const char * valid_options = 0;
@@ -2531,7 +2719,7 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
 
         case ATA_SMART_IMMEDIATE_OFFLINE:
           // SMART_SEND_DRIVE_COMMAND supports ABORT_SELF_TEST only on Win9x/ME
-          valid_options = (m_usr_options || in.in_regs.lba_low != 127/*ABORT*/ || is_win9x() ?
+          valid_options = (m_usr_options || in.in_regs.lba_low != 127/*ABORT*/ || win9x ?
                            "saicm3" : "aicm3");
           break;
 
@@ -2540,7 +2728,7 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
           // Try SCSI_MINIPORT also to skip buggy class driver
           // SMART functions do not support multi sector I/O.
           if (in.size == 512)
-            valid_options = (m_usr_options || is_win9x() ? "saicm3" : "aicm3");
+            valid_options = (m_usr_options || win9x ? "saicm3" : "aicm3");
           else
             valid_options = "a";
           break;
@@ -2642,6 +2830,7 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
   // Try all valid ioctls in the order specified in m_options
   bool powered_up = false;
   bool out_regs_set = false;
+  bool id_is_cached = false;
   const char * options = m_options.c_str();
 
   for (int i = 0; ; i++) {
@@ -2677,21 +2866,29 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
         }
         if (!m_smartver_state) {
           assert(m_port == -1);
-          if (smart_get_version(get_fh()) < 0) {
-            if (!con->permissive) {
+          GETVERSIONINPARAMS_EX vers_ex;
+          if (smart_get_version(get_fh(), &vers_ex) < 0) {
+            if (!failuretest_permissive) {
               m_smartver_state = 2;
               rc = -1; errno = ENOSYS;
               break;
             }
-            con->permissive--;
+            failuretest_permissive--;
           }
+          else  {
+            // 3ware RAID if vendor id present
+            m_is_3ware = (vers_ex.wIdentifier == SMART_VENDOR_3WARE);
+          }
+
           m_smartver_state = 1;
         }
         rc = smart_ioctl(get_fh(), m_drive, &regs, data, datasize, m_port);
         out_regs_set = (in.in_regs.features == ATA_SMART_STATUS);
+        id_is_cached = (m_port < 0 && !win9x); // Not cached by 3ware or Win9x/ME driver
         break;
       case 'm':
         rc = ata_via_scsi_miniport_smart_ioctl(get_fh(), &regs, data, datasize);
+        id_is_cached = (m_port < 0 && !win9x);
         break;
       case 'a':
         rc = ata_pass_through_ioctl(get_fh(), &regs,
@@ -2709,6 +2906,7 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
       case 'f':
         if (in.in_regs.command == ATA_IDENTIFY_DEVICE) {
             rc = get_identify_from_device_property(get_fh(), (ata_identify_device *)data);
+            id_is_cached = true;
         }
         else if (in.in_regs.command == ATA_SMART_CMD) switch (in.in_regs.features) {
           case ATA_SMART_READ_VALUES:
@@ -2716,31 +2914,19 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
             if (rc > 0)
               rc = 0;
             break;
-          case ATA_SMART_READ_THRESHOLDS:
-            {
-              ata_smart_values sv;
-              rc = storage_predict_failure_ioctl(get_fh(), (char *)&sv);
-              if (rc < 0)
-                break;
-              rc = 0;
-              // Fake zero thresholds
-              ata_smart_thresholds_pvt * tr = (ata_smart_thresholds_pvt *)data;
-              memset(tr, 0, 512);
-              for (int i = 0; i < NUMBER_ATA_SMART_ATTRIBUTES; i++)
-                tr->chksum -= tr->thres_entries[i].id = sv.vendor_attributes[i].id;
-            }
-            break;
           case ATA_SMART_ENABLE:
             rc = 0;
             break;
           case ATA_SMART_STATUS:
             rc = storage_predict_failure_ioctl(get_fh());
-            if (rc >= 0) {
-              if (rc > 0) {
-                regs.bCylHighReg = 0x2c; regs.bCylLowReg = 0xf4;
-                rc = 0;
-              }
-              out_regs_set = true;
+            if (rc == 0) {
+              // Good SMART status
+              out.out_regs.lba_high = 0xc2; out.out_regs.lba_mid = 0x4f;
+            }
+            else if (rc > 0) {
+              // Bad SMART status
+              out.out_regs.lba_high = 0x2c; out.out_regs.lba_mid = 0xf4;
+              rc = 0;
             }
             break;
           default:
@@ -2803,21 +2989,349 @@ bool win_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
       hi.lba_high     = prev_regs.bCylHighReg;
     }
   }
+
+  if (   in.in_regs.command == ATA_IDENTIFY_DEVICE
+      || in.in_regs.command == ATA_IDENTIFY_PACKET_DEVICE)
+    // Update ata_identify_is_cached() result according to ioctl used.
+    m_id_is_cached = id_is_cached;
+
   return true;
 }
 
 // Return true if OS caches the ATA identify sector
 bool win_ata_device::ata_identify_is_cached() const
 {
-  // Not RAID and WinNT4/2000/XP => true, RAID or Win9x/ME => false
-  // TODO: Set according to ioctl used.
-  return (m_port < 0 && !is_win9x());
+  return m_id_is_cached;
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// csmi_ata_device
+
+bool csmi_device::get_phy_info(CSMI_SAS_PHY_INFO & phy_info)
+{
+  // Get driver info to check CSMI support
+  CSMI_SAS_DRIVER_INFO_BUFFER driver_info_buf;
+  memset(&driver_info_buf, 0, sizeof(driver_info_buf));
+  if (!csmi_ioctl(CC_CSMI_SAS_GET_DRIVER_INFO, &driver_info_buf.IoctlHeader, sizeof(driver_info_buf)))
+    return false;
+
+  if (scsi_debugmode > 1) {
+    const CSMI_SAS_DRIVER_INFO & driver_info = driver_info_buf.Information;
+    pout("CSMI_SAS_DRIVER_INFO:\n");
+    pout("  Name:        \"%.81s\"\n", driver_info.szName);
+    pout("  Description: \"%.81s\"\n", driver_info.szDescription);
+    pout("  Revision:    %d.%d\n", driver_info.usMajorRevision, driver_info.usMinorRevision);
+  }
+
+  // Get Phy info
+  CSMI_SAS_PHY_INFO_BUFFER phy_info_buf;
+  memset(&phy_info_buf, 0, sizeof(phy_info_buf));
+  if (!csmi_ioctl(CC_CSMI_SAS_GET_PHY_INFO, &phy_info_buf.IoctlHeader, sizeof(phy_info_buf)))
+    return false;
+
+  phy_info = phy_info_buf.Information;
+  if (phy_info.bNumberOfPhys > sizeof(phy_info.Phy)/sizeof(phy_info.Phy[0]))
+    return set_err(EIO, "CSMI_SAS_PHY_INFO: Bogus NumberOfPhys=%d", phy_info.bNumberOfPhys);
+
+  if (scsi_debugmode > 1) {
+    pout("CSMI_SAS_PHY_INFO: NumberOfPhys=%d\n", phy_info.bNumberOfPhys);
+    for (int i = 0; i < phy_info.bNumberOfPhys; i++) {
+      const CSMI_SAS_PHY_ENTITY & pe = phy_info.Phy[i];
+      const CSMI_SAS_IDENTIFY & id = pe.Identify, & at = pe.Attached;
+      pout("Phy[%d] Port:   0x%02x\n", i, pe.bPortIdentifier);
+      pout("  Type:        0x%02x, 0x%02x\n", id.bDeviceType, at.bDeviceType);
+      pout("  InitProto:   0x%02x, 0x%02x\n", id.bInitiatorPortProtocol, at.bInitiatorPortProtocol);
+      pout("  TargetProto: 0x%02x, 0x%02x\n", id.bTargetPortProtocol, at.bTargetPortProtocol);
+      pout("  PhyIdent:    0x%02x, 0x%02x\n", id.bPhyIdentifier, at.bPhyIdentifier);
+      const unsigned char * b = id.bSASAddress;
+      pout("  SASAddress:  %02x %02x %02x %02x %02x %02x %02x %02x, ",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+      b = at.bSASAddress;
+      pout(               "%02x %02x %02x %02x %02x %02x %02x %02x\n",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+    }
+  }
+
+  return true;
+}
+
+bool csmi_device::check_phy(const CSMI_SAS_PHY_INFO & phy_info, unsigned phy_no)
+{
+  // Check Phy presence
+  if (phy_no >= phy_info.bNumberOfPhys)
+    return set_err(ENOENT, "Port %u does not exist (#ports: %d)", phy_no,
+      phy_info.bNumberOfPhys);
+
+  const CSMI_SAS_PHY_ENTITY & phy_ent = phy_info.Phy[phy_no];
+  if (phy_ent.Attached.bDeviceType == CSMI_SAS_NO_DEVICE_ATTACHED)
+    return set_err(ENOENT, "No device on port %u", phy_no);
+
+  switch (phy_ent.Attached.bTargetPortProtocol) {
+    case CSMI_SAS_PROTOCOL_SATA:
+    case CSMI_SAS_PROTOCOL_STP:
+      break;
+    default:
+      return set_err(ENOENT, "No SATA device on port %u (protocol: %u)",
+        phy_no, phy_ent.Attached.bTargetPortProtocol);
+  }
+
+  return true;
+}
+
+bool csmi_device::select_phy(unsigned phy_no)
+{
+  CSMI_SAS_PHY_INFO phy_info;
+  if (!get_phy_info(phy_info))
+    return false;
+
+
+  if (!check_phy(phy_info, phy_no))
+    return false;
+
+  m_phy_ent = phy_info.Phy[phy_no];
+  return true;
+}
+
+
+bool csmi_ata_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out)
+{
+  if (!ata_cmd_is_ok(in,
+    true, // data_out_support
+    true, // multi_sector_support
+    true) // ata_48bit_support
+  )
+    return false;
+
+  // Create buffer with appropriate size
+  raw_buffer pthru_raw_buf(sizeof(CSMI_SAS_STP_PASSTHRU_BUFFER) + in.size);
+  CSMI_SAS_STP_PASSTHRU_BUFFER * pthru_buf = (CSMI_SAS_STP_PASSTHRU_BUFFER *)pthru_raw_buf.data();
+
+  // Set addresses from Phy info
+  CSMI_SAS_STP_PASSTHRU & pthru = pthru_buf->Parameters;
+  const CSMI_SAS_PHY_ENTITY & phy_ent = get_phy_ent();
+  pthru.bPhyIdentifier = phy_ent.Identify.bPhyIdentifier;
+  pthru.bPortIdentifier = phy_ent.bPortIdentifier;
+  memcpy(pthru.bDestinationSASAddress, phy_ent.Attached.bSASAddress,
+    sizeof(pthru.bDestinationSASAddress));
+  pthru.bConnectionRate = CSMI_SAS_LINK_RATE_NEGOTIATED;
+
+  // Set transfer mode
+  switch (in.direction) {
+    case ata_cmd_in::no_data:
+      pthru.uFlags = CSMI_SAS_STP_PIO | CSMI_SAS_STP_UNSPECIFIED;
+      break;
+    case ata_cmd_in::data_in:
+      pthru.uFlags = CSMI_SAS_STP_PIO | CSMI_SAS_STP_READ;
+      pthru.uDataLength = in.size;
+      break;
+    case ata_cmd_in::data_out:
+      pthru.uFlags = CSMI_SAS_STP_PIO | CSMI_SAS_STP_WRITE;
+      pthru.uDataLength = in.size;
+      memcpy(pthru_buf->bDataBuffer, in.buffer, in.size);
+      break;
+    default:
+      return set_err(EINVAL, "csmi_ata_device::ata_pass_through: invalid direction=%d",
+        (int)in.direction);
+  }
+
+  // Set host-to-device FIS
+  {
+    unsigned char * fis = pthru.bCommandFIS;
+    const ata_in_regs & lo = in.in_regs;
+    const ata_in_regs & hi = in.in_regs.prev;
+    fis[ 0] = 0x27; // Type: host-to-device FIS
+    fis[ 1] = 0x80; // Bit7: Update command register
+    fis[ 2] = lo.command;
+    fis[ 3] = lo.features;
+    fis[ 4] = lo.lba_low;
+    fis[ 5] = lo.lba_mid;
+    fis[ 6] = lo.lba_high;
+    fis[ 7] = lo.device;
+    fis[ 8] = hi.lba_low;
+    fis[ 9] = hi.lba_mid;
+    fis[10] = hi.lba_high;
+    fis[11] = hi.features;
+    fis[12] = lo.sector_count;
+    fis[13] = hi.sector_count;
+  }
+
+  // Call ioctl
+  if (!csmi_ioctl(CC_CSMI_SAS_STP_PASSTHRU, &pthru_buf->IoctlHeader, pthru_raw_buf.size())) {
+    return false;
+  }
+
+  // Get device-to-host FIS
+  {
+    const unsigned char * fis = pthru_buf->Status.bStatusFIS;
+    ata_out_regs & lo = out.out_regs;
+    lo.status       = fis[ 2];
+    lo.error        = fis[ 3];
+    lo.lba_low      = fis[ 4];
+    lo.lba_mid      = fis[ 5];
+    lo.lba_high     = fis[ 6];
+    lo.device       = fis[ 7];
+    lo.sector_count = fis[12];
+    if (in.in_regs.is_48bit_cmd()) {
+      ata_out_regs & hi = out.out_regs.prev;
+      hi.lba_low      = fis[ 8];
+      hi.lba_mid      = fis[ 9];
+      hi.lba_high     = fis[10];
+      hi.sector_count = fis[13];
+    }
+  }
+
+  // Get data
+  if (in.direction == ata_cmd_in::data_in)
+    // TODO: Check ptru_buf->Status.uDataBytes
+    memcpy(in.buffer, pthru_buf->bDataBuffer, in.size);
+
+  return true;
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// win_csmi_device
+
+win_csmi_device::win_csmi_device(smart_interface * intf, const char * dev_name,
+  const char * req_type)
+: smart_device(intf, dev_name, "ata", req_type),
+  m_fh(INVALID_HANDLE_VALUE), m_phy_no(0)
+{
+}
+
+win_csmi_device::~win_csmi_device() throw()
+{
+  if (m_fh != INVALID_HANDLE_VALUE)
+    CloseHandle(m_fh);
+}
+
+bool win_csmi_device::is_open() const
+{
+  return (m_fh != INVALID_HANDLE_VALUE);
+}
+
+bool win_csmi_device::close()
+{
+  if (m_fh == INVALID_HANDLE_VALUE)
+    return true;
+  BOOL rc = CloseHandle(m_fh);
+  m_fh = INVALID_HANDLE_VALUE;
+  return !!rc;
+}
+
+
+bool win_csmi_device::open_scsi()
+{
+  // Parse name
+  unsigned contr_no = ~0, phy_no = ~0; int nc = -1;
+  const char * name = skipdev(get_dev_name());
+  if (!(   sscanf(name, "csmi%u,%u%n", &contr_no, &phy_no, &nc) >= 0
+        && nc == (int)strlen(name) && contr_no <= 9 && phy_no < 32)  )
+    return set_err(EINVAL);
+
+  // Open controller handle
+  char devpath[30];
+  snprintf(devpath, sizeof(devpath)-1, "\\\\.\\Scsi%u:", contr_no);
+
+  HANDLE h = CreateFileA(devpath, GENERIC_READ|GENERIC_WRITE,
+    FILE_SHARE_READ|FILE_SHARE_WRITE,
+    (SECURITY_ATTRIBUTES *)0, OPEN_EXISTING, 0, 0);
+
+  if (h == INVALID_HANDLE_VALUE) {
+    long err = GetLastError();
+    if (err == ERROR_FILE_NOT_FOUND)
+      set_err(ENOENT, "%s: not found", devpath);
+    else if (err == ERROR_ACCESS_DENIED)
+      set_err(EACCES, "%s: access denied", devpath);
+    else
+      set_err(EIO, "%s: Error=%ld", devpath, err);
+    return false;
+  }
+
+  if (scsi_debugmode > 1)
+    pout(" %s: successfully opened\n", devpath);
+
+  m_fh = h;
+  m_phy_no = phy_no;
+  return true;
+}
+
+
+bool win_csmi_device::open()
+{
+  if (!open_scsi())
+    return false;
+
+  // Get Phy info for this drive
+  if (!select_phy(m_phy_no)) {
+    close();
+    return false;
+  }
+
+  return true;
+}
+
+
+bool win_csmi_device::csmi_ioctl(unsigned code, IOCTL_HEADER * csmi_buffer,
+  unsigned csmi_bufsiz)
+{
+  // Determine signature
+  const char * sig;
+  switch (code) {
+    case CC_CSMI_SAS_GET_DRIVER_INFO:
+      sig = CSMI_ALL_SIGNATURE; break;
+    case CC_CSMI_SAS_GET_PHY_INFO:
+    case CC_CSMI_SAS_STP_PASSTHRU:
+      sig = CSMI_SAS_SIGNATURE; break;
+    default:
+      return set_err(ENOSYS, "Unknown CSMI code=%u", code);
+  }
+
+  // Set header
+  csmi_buffer->HeaderLength = sizeof(IOCTL_HEADER);
+  strncpy((char *)csmi_buffer->Signature, sig, sizeof(csmi_buffer->Signature));
+  csmi_buffer->Timeout = CSMI_SAS_TIMEOUT;
+  csmi_buffer->ControlCode = code;
+  csmi_buffer->ReturnCode = 0;
+  csmi_buffer->Length = csmi_bufsiz - sizeof(IOCTL_HEADER);
+
+  // Call function
+  DWORD num_out = 0;
+  if (!DeviceIoControl(m_fh, IOCTL_SCSI_MINIPORT,
+    csmi_buffer, csmi_bufsiz, csmi_buffer, csmi_bufsiz, &num_out, (OVERLAPPED*)0)) {
+    long err = GetLastError();
+    if (scsi_debugmode)
+      pout("  IOCTL_SCSI_MINIPORT(CC_CSMI_%u) failed, Error=%ld\n", code, err);
+    if (   err == ERROR_INVALID_FUNCTION
+        || err == ERROR_NOT_SUPPORTED
+        || err == ERROR_DEV_NOT_EXIST)
+      return set_err(ENOSYS, "CSMI is not supported (Error=%ld)", err);
+    else
+      return set_err(EIO, "CSMI(%u) failed with Error=%ld", code, err);
+  }
+
+  // Check result
+  if (csmi_buffer->ReturnCode) {
+    if (scsi_debugmode) {
+      pout("  IOCTL_SCSI_MINIPORT(CC_CSMI_%u) failed, ReturnCode=%lu\n",
+        code, csmi_buffer->ReturnCode);
+    }
+    return set_err(EIO, "CSMI(%u) failed with ReturnCode=%lu", code, csmi_buffer->ReturnCode);
+  }
+
+  if (scsi_debugmode > 1)
+    pout("  IOCTL_SCSI_MINIPORT(CC_CSMI_%u) succeeded, bytes returned: %lu\n", code, num_out);
+
+  return true;
 }
 
 
 /////////////////////////////////////////////////////////////////////////////
-// ASPI Interface (for SCSI devices)
+// ASPI Interface (for SCSI devices on 9x/ME)
 /////////////////////////////////////////////////////////////////////////////
+
+#if WIN9X_SUPPORT
 
 #pragma pack(1)
 
@@ -2950,7 +3464,7 @@ static int aspi_call(ASPI_SRB * srb)
       errno = EIO;
       return -1;
     }
-    if (con->reportscsiioctl > 1)
+    if (scsi_debugmode > 1)
       pout("ASPI Adapter %u: Waiting (%d) ...\n", srb->h.adapter, i);
     Sleep(100);
   }
@@ -3011,7 +3525,7 @@ static int aspi_open_dll(int verbose)
     errno = ENOENT;
     return -1;
   }
-  if (con->reportscsiioctl > 1) {
+  if (scsi_debugmode > 1) {
     // Print full path of WNASPI32.DLL
     char path[MAX_PATH];
     if (!GetModuleFileName(h_aspi_dll, path, sizeof(path)))
@@ -3027,7 +3541,7 @@ static int aspi_open_dll(int verbose)
 
   // Init ASPI manager and get number of adapters
   info = (aspi_info)();
-  if (con->reportscsiioctl > 1)
+  if (scsi_debugmode > 1)
     pout("GetASPI32SupportInfo() returns 0x%04x\n", info);
   rc = (info >> 8) & 0xff;
   if (rc == ASPI_STATUS_NO_ADAPTERS) {
@@ -3046,7 +3560,7 @@ static int aspi_open_dll(int verbose)
     return -1;
   }
 
-  if (con->reportscsiioctl)
+  if (scsi_debugmode)
     pout("%u ASPI Adapter%s detected\n",num_aspi_adapters, (num_aspi_adapters!=1?"s":""));
 
 #ifdef __CYGWIN__
@@ -3079,7 +3593,7 @@ static int aspi_io_call(ASPI_SRB * srb, unsigned timeout)
       }
       else {
         pout("WaitForSingleObject(%lx) = 0x%lx,%ld, Error=%ld\n",
-          (unsigned long)event, rc, rc, GetLastError());
+          (unsigned long)(ULONG_PTR)event, rc, rc, GetLastError());
       }
       // TODO: ASPI_ABORT_IO command
       aspi_entry = 0;
@@ -3138,7 +3652,7 @@ bool win_aspi_device::open()
     if (!is_permissive())
       return set_err(srb.h.status == ASPI_STATUS_INVALID_TARGET ? ENOENT : EIO);
   }
-  else if (con->reportscsiioctl)
+  else if (scsi_debugmode)
     pout("ASPI Adapter %u, ID %u: Device Type=0x%02x\n", adapter, id, srb.t.devtype);
 
   m_adapter = (int)adapter; m_id = (unsigned char)id;
@@ -3158,7 +3672,7 @@ bool win_aspi_device::close()
 bool win9x_smart_interface::scsi_scan(smart_device_list & devlist)
 {
   if (!aspi_entry_valid()) {
-    if (aspi_open_dll(con->reportscsiioctl/*default is quiet*/))
+    if (aspi_open_dll(scsi_debugmode/*default is quiet*/))
       return true;
   }
 
@@ -3166,7 +3680,7 @@ bool win9x_smart_interface::scsi_scan(smart_device_list & devlist)
     ASPI_SRB srb;
 
     if (ad > 9) {
-      if (con->reportscsiioctl)
+      if (scsi_debugmode)
         pout(" ASPI Adapter %u: Ignored\n", ad);
       continue;
     }
@@ -3179,12 +3693,12 @@ bool win9x_smart_interface::scsi_scan(smart_device_list & devlist)
       break;
 
     if (srb.h.status != ASPI_STATUS_NO_ERROR) {
-      if (con->reportscsiioctl)
+      if (scsi_debugmode)
         pout(" ASPI Adapter %u: Status=0x%02x\n", ad, srb.h.status);
       continue;
     }
 
-    if (con->reportscsiioctl) {
+    if (scsi_debugmode) {
       for (int i = 1; i < 16 && srb.q.adapter_id[i]; i++)
         if (!(' ' <= srb.q.adapter_id[i] && srb.q.adapter_id[i] <= '~'))
           srb.q.adapter_id[i] = '?';
@@ -3201,19 +3715,19 @@ bool win9x_smart_interface::scsi_scan(smart_device_list & devlist)
       if (aspi_call(&srb))
         return 0;
       if (srb.h.status != ASPI_STATUS_NO_ERROR) {
-        if (con->reportscsiioctl > 1)
+        if (scsi_debugmode > 1)
           pout("  ID %u: No such device (Status=0x%02x)\n", id, srb.h.status);
         continue;
       }
 
       if (!ignore && srb.t.devtype == 0x00/*HDD*/) {
-        if (con->reportscsiioctl)
+        if (scsi_debugmode)
           pout("  ID %u: Device Type=0x%02x\n", id, srb.t.devtype);
         char name[20];
         sprintf(name, "/dev/scsi%u%u", ad, id);
         devlist.push_back( new win_aspi_device(this, name, "scsi") );
       }
-      else if (con->reportscsiioctl)
+      else if (scsi_debugmode)
         pout("  ID %u: Device Type=0x%02x (ignored)\n", id, srb.t.devtype);
     }
   }
@@ -3224,7 +3738,7 @@ bool win9x_smart_interface::scsi_scan(smart_device_list & devlist)
 // Interface to ASPI SCSI devices
 bool win_aspi_device::scsi_pass_through(scsi_cmnd_io * iop)
 {
-  int report = con->reportscsiioctl; // TODO
+  int report = scsi_debugmode; // TODO
 
   if (m_adapter < 0) {
     set_err(EBADF);
@@ -3348,6 +3862,7 @@ bool win_aspi_device::scsi_pass_through(scsi_cmnd_io * iop)
   return true;
 }
 
+#endif // WIN9X_SUPPORT
 
 /////////////////////////////////////////////////////////////////////////////
 // SPT Interface (for SCSI devices and ATA devices behind SATLs)
@@ -3426,39 +3941,6 @@ bool win_scsi_device::open(int pd_num, int ld_num, int tape_num, int /*sub_addr*
 }
 
 
-bool winnt_smart_interface::scsi_scan(smart_device_list & devlist)
-{
-  char name[20];
-  for (int i = 0; i <= 9; i++) {
-    if (get_phy_drive_type(i) != DEV_SCSI)
-      continue;
-    // STORAGE_QUERY_PROPERTY returned SCSI/SAS/...
-    sprintf(name, "/dev/sd%c", 'a'+i);
-    devlist.push_back( new win_scsi_device(this, name, "scsi") );
-  }
-  return true;
-}
-
-
-#define IOCTL_SCSI_PASS_THROUGH_DIRECT  \
-  CTL_CODE(IOCTL_SCSI_BASE, 0x0405, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-
-typedef struct _SCSI_PASS_THROUGH_DIRECT {
-  USHORT          Length;
-  UCHAR           ScsiStatus;
-  UCHAR           PathId;
-  UCHAR           TargetId;
-  UCHAR           Lun;
-  UCHAR           CdbLength;
-  UCHAR           SenseInfoLength;
-  UCHAR           DataIn;
-  ULONG           DataTransferLength;
-  ULONG           TimeOutValue;
-  PVOID           DataBuffer;
-  ULONG           SenseInfoOffset;
-  UCHAR           Cdb[16];
-} SCSI_PASS_THROUGH_DIRECT;
-
 typedef struct {
   SCSI_PASS_THROUGH_DIRECT spt;
   ULONG           Filler;
@@ -3515,7 +3997,7 @@ static long scsi_pass_through_indirect(HANDLE h,
 // Interface to SPT SCSI devices.  See scsicmds.h and os_linux.c
 bool win_scsi_device::scsi_pass_through(struct scsi_cmnd_io * iop)
 {
-  int report = con->reportscsiioctl; // TODO
+  int report = scsi_debugmode; // TODO
 
   if (report > 0) {
     int k, j;
@@ -3567,7 +4049,7 @@ bool win_scsi_device::scsi_pass_through(struct scsi_cmnd_io * iop)
       sb.spt.DataTransferLength = iop->dxfer_len;
       sb.spt.DataBuffer = iop->dxferp;
       // IOCTL_SCSI_PASS_THROUGH_DIRECT does not support single byte
-      // transfers (needed for SMART STATUS check of JMicron USB briges)
+      // transfers (needed for SMART STATUS check of JMicron USB bridges)
       if (sb.spt.DataTransferLength == 1)
         direct = false;
       break;
@@ -3607,6 +4089,10 @@ bool win_scsi_device::scsi_pass_through(struct scsi_cmnd_io * iop)
     memcpy(iop->sensep, sb.ucSenseBuf, slen);
     iop->resp_sense_len = slen;
     if (report) {
+      if (report > 1) {
+        pout("  >>> Sense buffer, len=%d:\n", slen);
+        dStrHex(iop->sensep, slen , 1);
+      }
       if ((iop->sensep[0] & 0x7f) > 0x71)
         pout("  status=%x: [desc] sense_key=%x asc=%x ascq=%x\n",
              iop->scsi_status, iop->sensep[1] & 0xf,
@@ -3644,10 +4130,23 @@ bool win_scsi_device::scsi_pass_through(struct scsi_cmnd_io * iop)
 // Initialize platform interface and register with smi()
 void smart_interface::init()
 {
+  {
+    // Remove "." from DLL search path if supported
+    // to prevent DLL preloading attacks
+    BOOL (WINAPI * SetDllDirectoryA_p)(LPCSTR) = (BOOL (WINAPI *)(LPCSTR))
+      GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetDllDirectoryA");
+    if (SetDllDirectoryA_p)
+      SetDllDirectoryA_p("");
+  }
+
   // Select interface for Windows flavor
-  if (os_win32::is_win9x()) {
+  if (GetVersion() & 0x80000000) {
+#if WIN9X_SUPPORT
     static os_win32::win9x_smart_interface the_win9x_interface;
     smart_interface::set(&the_win9x_interface);
+#else
+    throw std::runtime_error("Win9x/ME not supported");
+#endif
   }
   else {
     static os_win32::winnt_smart_interface the_winnt_interface;
@@ -3655,3 +4154,27 @@ void smart_interface::init()
   }
 }
 
+
+#ifndef __CYGWIN__
+
+// Get exe directory
+// (prototype in utiliy.h)
+std::string get_exe_dir()
+{
+  char path[MAX_PATH];
+  // Get path of this exe
+  if (!GetModuleFileNameA(GetModuleHandleA(0), path, sizeof(path)))
+    throw std::runtime_error("GetModuleFileName() failed");
+  // Replace backslash by slash
+  int sl = -1;
+  for (int i = 0; path[i]; i++)
+    if (path[i] == '\\') {
+      path[i] = '/'; sl = i;
+    }
+  // Remove filename
+  if (sl >= 0)
+    path[sl] = 0;
+  return path;
+}
+
+#endif

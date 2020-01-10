@@ -3,12 +3,12 @@
  *
  * Home page of code is: http://smartmontools.sourceforge.net
  *
- * Copyright (C) 2003-8 Bruce Allen <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2003-8 Doug Gilbert <dougg@torque.net>
- * Copyright (C) 2008   Hank Wu <hank@areca.com.tw>
- * Copyright (C) 2008   Oliver Bock <brevilo@users.sourceforge.net>
- * Copyright (C) 2008-9 Christian Franke <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2008   Jordan Hargrave <jordan_hargrave@dell.com>
+ * Copyright (C) 2003-11 Bruce Allen <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2003-11 Doug Gilbert <dgilbert@interlog.com>
+ * Copyright (C) 2008    Hank Wu <hank@areca.com.tw>
+ * Copyright (C) 2008    Oliver Bock <brevilo@users.sourceforge.net>
+ * Copyright (C) 2008-11 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2008    Jordan Hargrave <jordan_hargrave@dell.com>
  *
  *  Parts of this file are derived from code that was
  *
@@ -60,8 +60,9 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
-#include <sys/file.h>
+#include <sys/utsname.h>
 #include <unistd.h>
+#include <stddef.h>  // for offsetof()
 #include <sys/uio.h>
 #include <sys/types.h>
 #ifndef makedev // old versions of types.h do not include sysmacros.h
@@ -73,11 +74,9 @@
 
 #include "int64.h"
 #include "atacmds.h"
-#include "extern.h"
 #include "os_linux.h"
 #include "scsicmds.h"
 #include "utility.h"
-#include "extern.h"
 #include "cciss.h"
 #include "megaraid.h"
 
@@ -90,12 +89,8 @@
 
 #define ARGUSED(x) ((void)(x))
 
-const char *os_XXXX_c_cvsid="$Id: os_linux.cpp 3053 2010-01-28 20:05:33Z chrfranke $" \
-ATACMDS_H_CVSID CONFIG_H_CVSID INT64_H_CVSID OS_LINUX_H_CVSID SCSICMDS_H_CVSID UTILITY_H_CVSID;
-
-/* for passing global control variables */
-// (con->reportscsiioctl only)
-extern smartmonctrl *con;
+const char * os_linux_cpp_cvsid = "$Id: os_linux.cpp 3441 2011-10-12 17:22:15Z chrfranke $"
+  OS_LINUX_H_CVSID;
 
 
 namespace os_linux { // No need to publish anything, name provided for Doxygen
@@ -196,6 +191,7 @@ static const char  smartctl_examples[] =
 		  "  smartctl --all --device=3ware,2 /dev/sda\n"
 		  "  smartctl --all --device=3ware,2 /dev/twe0\n"
 		  "  smartctl --all --device=3ware,2 /dev/twa0\n"
+		  "  smartctl --all --device=3ware,2 /dev/twl0\n"
 		  "          (Prints all SMART info for 3rd ATA disk on 3ware RAID controller)\n"
 		  "  smartctl --all --device=hpt,1/1/3 /dev/sda\n"
 		  "          (Prints all SMART info for the SATA disk attached to the 3rd PMPort\n"
@@ -855,7 +851,7 @@ linux_scsi_device::linux_scsi_device(smart_interface * intf,
 
 bool linux_scsi_device::scsi_pass_through(scsi_cmnd_io * iop)
 {
-  int status = do_normal_scsi_cmnd_io(get_fd(), iop, con->reportscsiioctl);
+  int status = do_normal_scsi_cmnd_io(get_fd(), iop, scsi_debugmode);
   if (status < 0)
       return set_err(-status);
   return true;
@@ -913,7 +909,7 @@ linux_megaraid_device::~linux_megaraid_device() throw()
 
 smart_device * linux_megaraid_device::autodetect_open()
 {
-  int report = con->reportscsiioctl; 
+  int report = scsi_debugmode;
 
   // Open device
   if (!open())
@@ -938,15 +934,19 @@ smart_device * linux_megaraid_device::autodetect_open()
       return this;
 
   if (report)
-    printf("Got MegaRAID inquiry.. %s\n", req_buff+8);
+    pout("Got MegaRAID inquiry.. %s\n", req_buff+8);
 
   // Use INQUIRY to detect type
   {
     // SAT or USB ?
     ata_device * newdev = smi()->autodetect_sat_device(this, req_buff, len);
-    if (newdev)
+    if (newdev) {
       // NOTE: 'this' is now owned by '*newdev'
+      newdev->close();
+      newdev->set_err(ENOSYS, "SATA device detected,\n"
+        "MegaRAID SAT layer is reportedly buggy, use '-d sat+megaraid,N' to try anyhow");
       return newdev;
+    }
   }
 
   // Nothing special found
@@ -959,7 +959,7 @@ bool linux_megaraid_device::open()
   char line[128];
   int   mjr, n1;
   FILE *fp;
-  int report = con->reportscsiioctl; 
+  int report = scsi_debugmode;
 
   if (!linux_smart_device::open())
     return false;
@@ -982,14 +982,14 @@ bool linux_megaraid_device::open()
   	if (sscanf(line, "%d megaraid_sas_ioctl%n", &mjr, &n1) == 1 && n1 == 22) {
 	   n1=mknod("/dev/megaraid_sas_ioctl_node", S_IFCHR, makedev(mjr, 0));
 	   if(report > 0)
-	     printf("Creating /dev/megaraid_sas_ioctl_node = %d\n", n1 >= 0 ? 0 : errno);
+	     pout("Creating /dev/megaraid_sas_ioctl_node = %d\n", n1 >= 0 ? 0 : errno);
 	   if (n1 >= 0 || errno == EEXIST)
 	      break;
 	}
 	else if (sscanf(line, "%d megadev%n", &mjr, &n1) == 1 && n1 == 11) {
 	   n1=mknod("/dev/megadev0", S_IFCHR, makedev(mjr, 0));
 	   if(report > 0)
-	     printf("Creating /dev/megadev0 = %d\n", n1 >= 0 ? 0 : errno);
+	     pout("Creating /dev/megadev0 = %d\n", n1 >= 0 ? 0 : errno);
 	   if (n1 >= 0 || errno == EEXIST)
 	      break;
 	}
@@ -1022,7 +1022,7 @@ bool linux_megaraid_device::close()
 
 bool linux_megaraid_device::scsi_pass_through(scsi_cmnd_io *iop)
 {
-  int report = con->reportscsiioctl; 
+  int report = scsi_debugmode;
 
   if (report > 0) {
         int k, j;
@@ -1050,24 +1050,21 @@ bool linux_megaraid_device::scsi_pass_through(scsi_cmnd_io *iop)
         pout("%s", buff);
   }
 
-  /* Controller rejects Enable SMART and Test Unit Ready */
+  // Controller rejects Test Unit Ready
   if (iop->cmnd[0] == 0x00)
     return true;
-  if (iop->cmnd[0] == 0x85 && iop->cmnd[1] == 0x06) {
-    if(report > 0)
-      pout("Rejecting SMART/ATA command to controller\n");
-    // Emulate SMART STATUS CHECK drive reply
-    // smartctl fail to work without this
-    if(iop->cmnd[2]==0x2c) {
-      iop->resp_sense_len=22; // copied from real response
-      iop->sensep[0]=0x72; // descriptor format
-      iop->sensep[7]=0x0e; // additional length
-      iop->sensep[8]=0x09; // description pointer
-      iop->sensep[17]=0x4f; // low cylinder GOOD smart status
-      iop->sensep[19]=0xc2; // high cylinder GOOD smart status
-    }
-    return true;
+
+  if (iop->cmnd[0] == SAT_ATA_PASSTHROUGH_12 || iop->cmnd[0] == SAT_ATA_PASSTHROUGH_16) { 
+    // Controller does not return ATA output registers in SAT sense data
+    if (iop->cmnd[2] & (1 << 5)) // chk_cond
+      return set_err(ENOSYS, "ATA return descriptor not supported by controller firmware");
   }
+  // SMART WRITE LOG SECTOR causing media errors
+  if ((iop->cmnd[0] == SAT_ATA_PASSTHROUGH_16 && iop->cmnd[14] == ATA_SMART_CMD 
+	&& iop->cmnd[3]==0 && iop->cmnd[4] == ATA_SMART_WRITE_LOG_SECTOR) || 
+      (iop->cmnd[0] == SAT_ATA_PASSTHROUGH_12 && iop->cmnd[9] == ATA_SMART_CMD &&
+        iop->cmnd[3] == ATA_SMART_WRITE_LOG_SECTOR)) 
+    return set_err(ENOSYS, "SMART WRITE LOG SECTOR command is not supported by controller firmware"); 
 
   if (pt_cmd == NULL)
     return false;
@@ -1086,7 +1083,7 @@ bool linux_megaraid_device::megasas_cmd(int cdbLen, void *cdb,
   int rc;
 
   memset(&uio, 0, sizeof(uio));
-  pthru = (struct megasas_pthru_frame *)uio.frame.raw;
+  pthru = &uio.frame.pthru;
   pthru->cmd = MFI_CMD_PD_SCSI_IO;
   pthru->cmd_status = 0xFF;
   pthru->scsi_status = 0x0;
@@ -1095,17 +1092,21 @@ bool linux_megaraid_device::megasas_cmd(int cdbLen, void *cdb,
   pthru->cdb_len = cdbLen;
   pthru->timeout = 0;
   pthru->flags = MFI_FRAME_DIR_READ;
-  pthru->sge_count = 1;
-  pthru->data_xfer_len = dataLen;
-  pthru->sgl.sge32[0].phys_addr = (intptr_t)data;
-  pthru->sgl.sge32[0].length = (uint32_t)dataLen;
+  if (dataLen > 0) {
+    pthru->sge_count = 1;
+    pthru->data_xfer_len = dataLen;
+    pthru->sgl.sge32[0].phys_addr = (intptr_t)data;
+    pthru->sgl.sge32[0].length = (uint32_t)dataLen;
+  }
   memcpy(pthru->cdb, cdb, cdbLen);
 
   uio.host_no = m_hba;
-  uio.sge_count = 1;
-  uio.sgl_off = offsetof(struct megasas_pthru_frame, sgl);
-  uio.sgl[0].iov_base = data;
-  uio.sgl[0].iov_len = dataLen;
+  if (dataLen > 0) {
+    uio.sge_count = 1;
+    uio.sgl_off = offsetof(struct megasas_pthru_frame, sgl);
+    uio.sgl[0].iov_base = data;
+    uio.sgl[0].iov_len = dataLen;
+  }
 
   rc = 0;
   errno = 0;
@@ -1124,13 +1125,10 @@ bool linux_megaraid_device::megasas_cmd(int cdbLen, void *cdb,
 /* Issue passthrough scsi commands to PERC2/3/4 controllers */
 bool linux_megaraid_device::megadev_cmd(int cdbLen, void *cdb, 
   int dataLen, void *data,
-  int senseLen, void *sense, int /*report*/)
+  int /*senseLen*/, void * /*sense*/, int /*report*/)
 {
   struct uioctl_t uio;
   int rc;
-
-  sense = NULL;
-  senseLen = 0;
 
   /* Don't issue to the controller */
   if (m_disknum == 7)
@@ -1197,7 +1195,7 @@ linux_cciss_device::linux_cciss_device(smart_interface * intf,
 
 bool linux_cciss_device::scsi_pass_through(scsi_cmnd_io * iop)
 {
-  int status = cciss_io_interface(get_fd(), m_disknum, iop, con->reportscsiioctl);
+  int status = cciss_io_interface(get_fd(), m_disknum, iop, scsi_debugmode);
   if (status < 0)
       return set_err(-status);
   return true;
@@ -1216,7 +1214,8 @@ public:
   enum escalade_type_t {
     AMCC_3WARE_678K,
     AMCC_3WARE_678K_CHAR,
-    AMCC_3WARE_9000_CHAR
+    AMCC_3WARE_9000_CHAR,
+    AMCC_3WARE_9700_CHAR
   };
 
   linux_escalade_device(smart_interface * intf, const char * dev_name,
@@ -1244,7 +1243,8 @@ linux_escalade_device::linux_escalade_device(smart_interface * intf, const char 
 #define MAJOR_STRING_LENGTH 3
 #define DEVICE_STRING_LENGTH 32
 #define NODE_STRING_LENGTH 16
-int setup_3ware_nodes(const char *nodename, const char *driver_name) {
+static int setup_3ware_nodes(const char *nodename, const char *driver_name)
+{
   int              tw_major      = 0;
   int              index         = 0;
   char             majorstring[MAJOR_STRING_LENGTH+1];
@@ -1389,12 +1389,17 @@ int setup_3ware_nodes(const char *nodename, const char *driver_name) {
 
 bool linux_escalade_device::open()
 {
-  if (m_escalade_type == AMCC_3WARE_9000_CHAR || m_escalade_type == AMCC_3WARE_678K_CHAR) {
+  if (m_escalade_type == AMCC_3WARE_9700_CHAR || m_escalade_type == AMCC_3WARE_9000_CHAR ||
+      m_escalade_type == AMCC_3WARE_678K_CHAR) {
     // the device nodes for these controllers are dynamically assigned,
     // so we need to check that they exist with the correct major
     // numbers and if not, create them
-    const char * node   = (m_escalade_type == AMCC_3WARE_9000_CHAR ? "twa"    : "twe"    );
-    const char * driver = (m_escalade_type == AMCC_3WARE_9000_CHAR ? "3w-9xxx": "3w-xxxx");
+    const char * node   = (m_escalade_type == AMCC_3WARE_9700_CHAR ? "twl"     :
+                           m_escalade_type == AMCC_3WARE_9000_CHAR ? "twa"     :
+                                                                     "twe"      );
+    const char * driver = (m_escalade_type == AMCC_3WARE_9700_CHAR ? "3w-sas"  :
+                           m_escalade_type == AMCC_3WARE_9000_CHAR ? "3w-9xxx" :
+                                                                     "3w-xxxx"  );
     if (setup_3ware_nodes(node, driver))
       return set_err((errno ? errno : ENXIO), "setup_3ware_nodes(\"%s\", \"%s\") failed", node, driver);
   }
@@ -1461,7 +1466,7 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
   memset(ioctl_buffer, 0, TW_IOCTL_BUFFER_SIZE);
 
   // TODO: Handle controller differences by different classes
-  if (m_escalade_type==AMCC_3WARE_9000_CHAR) {
+  if (m_escalade_type == AMCC_3WARE_9700_CHAR || m_escalade_type == AMCC_3WARE_9000_CHAR) {
     tw_ioctl_apache                               = (TW_Ioctl_Buf_Apache *)ioctl_buffer;
     tw_ioctl_apache->driver_command.control_code  = TW_IOCTL_FIRMWARE_PASS_THROUGH;
     tw_ioctl_apache->driver_command.buffer_length = 512; /* payload size */
@@ -1523,7 +1528,8 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
     // in dwords by 1 to account for the 64-bit single sgl 'address'
     // field. Note that this doesn't agree with the typedefs but it's
     // right (agree with kernel driver behavior/typedefs).
-    if (m_escalade_type==AMCC_3WARE_9000_CHAR && sizeof(long)==8)
+    if ((m_escalade_type == AMCC_3WARE_9700_CHAR || m_escalade_type == AMCC_3WARE_9000_CHAR)
+        && sizeof(long) == 8)
       passthru->size++;
   }
   else if (in.direction == ata_cmd_in::no_data) {
@@ -1535,7 +1541,7 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
     passthru->sector_count = 0x0;
   }
   else if (in.direction == ata_cmd_in::data_out) {
-    if (m_escalade_type == AMCC_3WARE_9000_CHAR)
+    if (m_escalade_type == AMCC_3WARE_9700_CHAR || m_escalade_type == AMCC_3WARE_9000_CHAR)
       memcpy(tw_ioctl_apache->data_buffer, in.buffer, in.size);
     else if (m_escalade_type == AMCC_3WARE_678K_CHAR)
       memcpy(tw_ioctl_char->data_buffer,   in.buffer, in.size);
@@ -1548,7 +1554,8 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
     passthru->byte0.sgloff = 0x5;
     passthru->size         = 0x7;  // TODO: Other value for multi-sector ?
     passthru->param        = 0xF;  // PIO data write
-    if (m_escalade_type==AMCC_3WARE_9000_CHAR && sizeof(long)==8)
+    if ((m_escalade_type == AMCC_3WARE_9700_CHAR || m_escalade_type == AMCC_3WARE_9000_CHAR)
+        && sizeof(long) == 8)
       passthru->size++;
   }
   else
@@ -1556,7 +1563,7 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
 
   // Now send the command down through an ioctl()
   int ioctlreturn;
-  if (m_escalade_type==AMCC_3WARE_9000_CHAR)
+  if (m_escalade_type == AMCC_3WARE_9700_CHAR || m_escalade_type == AMCC_3WARE_9000_CHAR)
     ioctlreturn=ioctl(get_fd(), TW_IOCTL_FIRMWARE_PASS_THROUGH, tw_ioctl_apache);
   else if (m_escalade_type==AMCC_3WARE_678K_CHAR)
     ioctlreturn=ioctl(get_fd(), TW_CMD_PACKET_WITH_DATA, tw_ioctl_char);
@@ -1607,7 +1614,7 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
 
   // If this is a read data command, copy data to output buffer
   if (readdata) {
-    if (m_escalade_type==AMCC_3WARE_9000_CHAR)
+    if (m_escalade_type == AMCC_3WARE_9700_CHAR || m_escalade_type == AMCC_3WARE_9000_CHAR)
       memcpy(in.buffer, tw_ioctl_apache->data_buffer, in.size);
     else if (m_escalade_type==AMCC_3WARE_678K_CHAR)
       memcpy(in.buffer, tw_ioctl_char->data_buffer, in.size);
@@ -1629,7 +1636,7 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
 
   // look for nonexistent devices/ports
   if (   in.in_regs.command == ATA_IDENTIFY_DEVICE
-      && !nonempty((unsigned char *)in.buffer, in.size)) {
+      && !nonempty(in.buffer, in.size)) {
     return set_err(ENODEV, "No drive on port %d", m_disknum);
   }
 
@@ -1641,14 +1648,14 @@ bool linux_escalade_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out 
 /// Areca RAID support
 
 class linux_areca_device
-: public /*implements*/ ata_device_with_command_set,
+: public /*implements*/ ata_device,
   public /*extends*/ linux_smart_device
 {
 public:
   linux_areca_device(smart_interface * intf, const char * dev_name, int disknum);
 
 protected:
-  virtual int ata_command_interface(smart_command_set command, int select, char * data);
+  virtual bool ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out); 
 
 private:
   int m_disknum; ///< Disk number.
@@ -1712,8 +1719,8 @@ typedef struct _SRB_BUFFER
 
 // Looks in /proc/scsi to suggest correct areca devices
 // If hint not NULL, return device path guess
-int find_areca_in_proc(char *hint) {
- 
+static int find_areca_in_proc(char *hint)
+{
     const char* proc_format_string="host\tchan\tid\tlun\ttype\topens\tqdepth\tbusy\tonline\n";
 
     // check data formwat
@@ -1763,8 +1770,9 @@ int find_areca_in_proc(char *hint) {
 }
 
 
+#if 0 // For debugging areca code
 
-void dumpdata( unsigned char *block, int len)
+static void dumpdata(unsigned char *block, int len)
 {
 	int ln = (len / 16) + 1;	 // total line#
 	unsigned char c;
@@ -1811,9 +1819,9 @@ void dumpdata( unsigned char *block, int len)
 	printf("=====================================================================\n");
 }
 
+#endif
 
-
-int arcmsr_command_handler(int fd, unsigned long arcmsr_cmd, unsigned char *data, int data_len, void *ext_data /* reserved for further use */)
+static int arcmsr_command_handler(int fd, unsigned long arcmsr_cmd, unsigned char *data, int data_len, void *ext_data /* reserved for further use */)
 {
 	ARGUSED(ext_data);
 
@@ -1935,14 +1943,14 @@ int arcmsr_command_handler(int fd, unsigned long arcmsr_cmd, unsigned char *data
 	// Deal with the different error cases
 	if ( ioctlreturn )
 	{
-		printf("do_scsi_cmnd_io with write buffer failed code = %x\n", ioctlreturn);
+		pout("do_scsi_cmnd_io with write buffer failed code = %x\n", ioctlreturn);
 		return -2;
 	}
 
 
 	if ( io_hdr.scsi_status )
 	{
-		printf("io_hdr.scsi_status with write buffer failed code = %x\n", io_hdr.scsi_status);
+		pout("io_hdr.scsi_status with write buffer failed code = %x\n", io_hdr.scsi_status);
 		return -3;
 	}
 
@@ -1965,8 +1973,16 @@ linux_areca_device::linux_areca_device(smart_interface * intf, const char * dev_
 }
 
 // Areca RAID Controller
-int linux_areca_device::ata_command_interface(smart_command_set command, int select, char * data)
+// int linux_areca_device::ata_command_interface(smart_command_set command, int select, char * data)
+bool linux_areca_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out) 
 {
+if (!ata_cmd_is_ok(in, 
+    true, // data_out_support 
+    false, // TODO: multi_sector_support 
+    true) // ata_48bit_support 
+    )
+    return false; 
+
 	// ATA input registers
 	typedef struct _ATA_INPUT_REGISTERS
 	{
@@ -2040,113 +2056,42 @@ int linux_areca_device::ata_command_interface(smart_command_set command, int sel
 	areca_packet[4] = (unsigned char)(((areca_packet_len - 6) >> 8) & 0xff);
 	areca_packet[5] = 0x1c;	// areca defined code for ATA passthrough command
 
-
 	// ----- BEGIN TO SETUP PAYLOAD DATA -----
-
 	memcpy(&areca_packet[7], "SmrT", 4);	// areca defined password
-
 	ata_cmd = (sATA_INPUT_REGISTERS *)&areca_packet[12];
-	ata_cmd->cylinder_low    = 0x4F;
-	ata_cmd->cylinder_high   = 0xC2;
 
-
-	if ( command == READ_VALUES     ||
-		 command == READ_THRESHOLDS ||
-		 command == READ_LOG ||
-		 command == IDENTIFY ||
-		 command == PIDENTIFY )
-	{
-		// the commands will return data
-		areca_packet[6] = 0x13;
-		ata_cmd->sector_count = 0x1;
+	// Set registers
+        {
+	    const ata_in_regs_48bit & r = in.in_regs;
+	    ata_cmd->features     = r.features_16;
+	    ata_cmd->sector_count  = r.sector_count_16;
+	    ata_cmd->sector_number = r.lba_low_16;
+	    ata_cmd->cylinder_low  = r.lba_mid_16;
+	    ata_cmd->cylinder_high = r.lba_high_16;
+	    ata_cmd->device_head   = r.device;
+	    ata_cmd->command      = r.command;
 	}
-	else if ( command == WRITE_LOG )
-	{
-		// the commands will write data
-		areca_packet[6] = 0x14;
+	bool readdata = false; 
+	if (in.direction == ata_cmd_in::data_in) { 
+	    readdata = true;
+	    // the command will read data
+	    areca_packet[6] = 0x13;
 	}
-	else
+	else if ( in.direction == ata_cmd_in::no_data )
 	{
 		// the commands will return no data
 		areca_packet[6] = 0x15;
 	}
-
-
-	ata_cmd->command = ATA_SMART_CMD;
-	// Now set ATA registers depending upon command
-	switch ( command )
+	else if (in.direction == ata_cmd_in::data_out) 
 	{
-	case CHECK_POWER_MODE:  
-		//printf("command = CHECK_POWER_MODE\n");
-		ata_cmd->command = ATA_CHECK_POWER_MODE;        
-		break;
-	case READ_VALUES:
-		//printf("command = READ_VALUES\n");
-		ata_cmd->features = ATA_SMART_READ_VALUES;
-		break;
-	case READ_THRESHOLDS:    
-		//printf("command = READ_THRESHOLDS\n");
-		ata_cmd->features = ATA_SMART_READ_THRESHOLDS;
-		break;
-	case READ_LOG: 
-		//printf("command = READ_LOG\n");
-		ata_cmd->features = ATA_SMART_READ_LOG_SECTOR;
-		ata_cmd->sector_number = select;        
-		break;
-	case WRITE_LOG:        
-		//printf("command = WRITE_LOG\n");    
-		ata_cmd->features = ATA_SMART_WRITE_LOG_SECTOR;
-		memcpy(ata_cmd->data, data, 512);
-		ata_cmd->sector_count = 1;
-		ata_cmd->sector_number = select;
-		break;
-	case IDENTIFY:
-		//printf("command = IDENTIFY\n");   
-		ata_cmd->command = ATA_IDENTIFY_DEVICE;         
-		break;
-	case PIDENTIFY:
-		//printf("command = PIDENTIFY\n");
-		errno=ENODEV;
-		return -1;
-	case ENABLE:
-		//printf("command = ENABLE\n");
-		ata_cmd->features = ATA_SMART_ENABLE;
-		break;
-	case DISABLE:
-		//printf("command = DISABLE\n");
-		ata_cmd->features = ATA_SMART_DISABLE;
-		break;
-	case AUTO_OFFLINE:
-		//printf("command = AUTO_OFFLINE\n");
-		ata_cmd->features = ATA_SMART_AUTO_OFFLINE;
-		// Enable or disable?
-		ata_cmd->sector_count = select;
-		break;
-	case AUTOSAVE:
-		//printf("command = AUTOSAVE\n");
-		ata_cmd->features = ATA_SMART_AUTOSAVE;
-		// Enable or disable?
-		ata_cmd->sector_count = select;
-		break;
-	case IMMEDIATE_OFFLINE:
-		//printf("command = IMMEDIATE_OFFLINE\n");
-		ata_cmd->features = ATA_SMART_IMMEDIATE_OFFLINE;
-		// What test type to run?
-		ata_cmd->sector_number = select;
-		break;
-	case STATUS_CHECK:
-		//printf("command = STATUS_CHECK\n");
-		ata_cmd->features = ATA_SMART_STATUS;           
-		break;
-	case STATUS:
-		//printf("command = STATUS\n");
-		ata_cmd->features = ATA_SMART_STATUS;       
-		break;
-	default:
-		//printf("command = UNKNOWN\n");
-		errno=ENOSYS;
-		return -1;
-	};
+		// the commands will write data
+		memcpy(ata_cmd->data, in.buffer, in.size);
+		areca_packet[6] = 0x14;
+	}
+	else {
+	    // COMMAND NOT SUPPORTED VIA ARECA IOCTL INTERFACE
+	    return set_err(ENOTSUP, "DATA OUT not supported for this Areca controller type");
+	}
 
 	areca_packet[11] = m_disknum - 1;		   // drive number
 
@@ -2165,7 +2110,7 @@ int linux_areca_device::ata_command_interface(smart_command_set command, int sel
 	expected = arcmsr_command_handler(get_fd(), ARCMSR_IOCTL_CLEAR_RQBUFFER, NULL, 0, NULL);
         if (expected==-3) {
 	    find_areca_in_proc(NULL);
-	    return -1;
+	    return set_err(EIO);
 	}
 
 	expected = arcmsr_command_handler(get_fd(), ARCMSR_IOCTL_CLEAR_WQBUFFER, NULL, 0, NULL);
@@ -2188,45 +2133,36 @@ int linux_areca_device::ata_command_interface(smart_command_set command, int sel
 
 	if ( return_buff[expected - 1] != cs )
 	{
-		errno = EIO;
-		return -1;
+		return set_err(EIO);
 	}
 
 	sATA_OUTPUT_REGISTERS *ata_out = (sATA_OUTPUT_REGISTERS *)&return_buff[5] ;
 	if ( ata_out->status )
 	{
-		if ( command == IDENTIFY )
-		{
-			pout("The firmware of your Areca RAID controller appears to be outdated!\n" \
-				 "Please update your controller to firmware version 1.46 or later.\n" \
-				 "You may download it here: ftp://ftp.areca.com.tw/RaidCards/BIOS_Firmware\n\n");
-		}
-		errno = EIO;
-		return -1;
+		if ( in.in_regs.command == ATA_IDENTIFY_DEVICE
+		 && !nonempty((unsigned char *)in.buffer, in.size)) 
+		 {
+		    return set_err(ENODEV, "No drive on port %d", m_disknum);
+		 } 
 	}
 
 	// returns with data
-	if ( command == READ_VALUES     ||
-		 command == READ_THRESHOLDS ||
-		 command == READ_LOG ||
-		 command == IDENTIFY ||
-		 command == PIDENTIFY )
+	if (readdata)
 	{
-		memcpy(data, &return_buff[7], 512); 
+		memcpy(in.buffer, &return_buff[7], in.size); 
 	}
 
-	if ( command == CHECK_POWER_MODE )
+	// Return register values
 	{
-		data[0] = ata_out->sector_count;
+	    ata_out_regs_48bit & r = out.out_regs;
+	    r.error           = ata_out->error;
+	    r.sector_count_16 = ata_out->sector_count;
+	    r.lba_low_16      = ata_out->sector_number;
+	    r.lba_mid_16      = ata_out->cylinder_low;
+	    r.lba_high_16     = ata_out->cylinder_high;
+	    r.status          = ata_out->status;
 	}
-
-	if ( command == STATUS_CHECK &&
-		 ( ata_out->cylinder_low == 0xF4 && ata_out->cylinder_high == 0x2C ) )
-	{
-		return 1;
-	}
-
-	return 0;
+	return true;
 }
 
 
@@ -2508,17 +2444,17 @@ int linux_highpoint_device::ata_command_interface(smart_command_set command, int
 
   if (command==WRITE_LOG) {
     unsigned char task[4*sizeof(int)+sizeof(ide_task_request_t)+512];
-    unsigned int *hpt = (unsigned int *)task;
+    unsigned int *hpt_tf = (unsigned int *)task;
     ide_task_request_t *reqtask = (ide_task_request_t *)(&task[4*sizeof(int)]);
     task_struct_t *taskfile = (task_struct_t *)reqtask->io_ports;
     int retval;
 
     memset(task, 0, sizeof(task));
 
-    hpt[0] = m_hpt_data[0]; // controller id
-    hpt[1] = m_hpt_data[1]; // channel number
-    hpt[3] = m_hpt_data[2]; // pmport number
-    hpt[2] = HDIO_DRIVE_TASKFILE; // real hd ioctl
+    hpt_tf[0] = m_hpt_data[0]; // controller id
+    hpt_tf[1] = m_hpt_data[1]; // channel number
+    hpt_tf[3] = m_hpt_data[2]; // pmport number
+    hpt_tf[2] = HDIO_DRIVE_TASKFILE; // real hd ioctl
 
     taskfile->data           = 0;
     taskfile->feature        = ATA_SMART_WRITE_LOG_SECTOR;
@@ -2585,13 +2521,13 @@ int linux_highpoint_device::ata_command_interface(smart_command_set command, int
 #if 1
   if (command==IDENTIFY || command==PIDENTIFY) {
     unsigned char deviceid[4*sizeof(int)+512*sizeof(char)];
-    unsigned int *hpt = (unsigned int *)deviceid;
+    unsigned int *hpt_id = (unsigned int *)deviceid;
 
-    hpt[0] = m_hpt_data[0]; // controller id
-    hpt[1] = m_hpt_data[1]; // channel number
-    hpt[3] = m_hpt_data[2]; // pmport number
+    hpt_id[0] = m_hpt_data[0]; // controller id
+    hpt_id[1] = m_hpt_data[1]; // channel number
+    hpt_id[3] = m_hpt_data[2]; // pmport number
 
-    hpt[2] = HDIO_GET_IDENTITY;
+    hpt_id[2] = HDIO_GET_IDENTITY;
     if (!ioctl(get_fd(), HPTIO_CTL, deviceid) && (deviceid[4*sizeof(int)] & 0x8000))
       buff[0]=(command==IDENTIFY)?ATA_IDENTIFY_PACKET_DEVICE:ATA_IDENTIFY_DEVICE;
   }
@@ -2695,7 +2631,7 @@ smart_device * linux_scsi_device::autodetect_open()
     if (!memcmp(req_buff + 8, "3ware", 5) || !memcmp(req_buff + 8, "AMCC", 4)) {
       close();
       set_err(EINVAL, "AMCC/3ware controller, please try adding '-d 3ware,N',\n"
-                      "you may need to replace %s with /dev/twaN or /dev/tweN", get_dev_name());
+                      "you may need to replace %s with /dev/twlN, /dev/twaN or /dev/tweN", get_dev_name());
       return this;
     }
 
@@ -2785,7 +2721,7 @@ static bool get_usb_id(const char * name, unsigned short & vendor_id,
         && read_id(dir + "/bcdDevice", version)   ))
     return false;
 
-  if (con->reportscsiioctl > 1)
+  if (scsi_debugmode > 1)
     pout("USB ID = 0x%04x:0x%04x (0x%03x)\n", vendor_id, product_id, version);
   return true;
 }
@@ -2798,6 +2734,8 @@ class linux_smart_interface
 : public /*implements*/ smart_interface
 {
 public:
+  virtual std::string get_os_version_str();
+
   virtual std::string get_app_examples(const char * appname);
 
   virtual bool scan_smart_devices(smart_device_list & devlist, const char * type,
@@ -2820,6 +2758,15 @@ private:
 
   smart_device * missing_option(const char * opt);
 };
+
+std::string linux_smart_interface::get_os_version_str()
+{
+  struct utsname u;
+  if (!uname(&u))
+    return strprintf("%s-linux-%s", u.machine, u.release);
+  else
+    return SMARTMONTOOLS_BUILD_HOST;
+}
 
 std::string linux_smart_interface::get_app_examples(const char * appname)
 {
@@ -2948,8 +2895,12 @@ bool linux_smart_interface::scan_smart_devices(smart_device_list & devlist,
 
   if (scan_ata)
     get_dev_list(devlist, "/dev/hd[a-t]", true, false, type, false);
-  if (scan_scsi) // Try USB autodetection if no type specifed
-    get_dev_list(devlist, "/dev/sd[a-z]", false, true, type, !*type);
+  if (scan_scsi) {
+    bool autodetect = !*type; // Try USB autodetection if no type specifed
+    get_dev_list(devlist, "/dev/sd[a-z]", false, true, type, autodetect);
+    // Support up to 104 devices
+    get_dev_list(devlist, "/dev/sd[a-c][a-z]", false, true, type, autodetect);
+  }
 
   // if we found traditional links, we are done
   if (devlist.size() > 0)
@@ -2977,76 +2928,71 @@ smart_device * linux_smart_interface::missing_option(const char * opt)
 }
 
 // Return true if STR starts with PREFIX.
-static bool str_starts_with(const char * str, const char * prefix)
+static inline bool str_starts_with(const char * str, const char * prefix)
 {
   return !strncmp(str, prefix, strlen(prefix));
+}
+
+// Return kernel release as integer ("2.6.31" -> 206031)
+static unsigned get_kernel_release()
+{
+  struct utsname u;
+  if (uname(&u))
+    return 0;
+  unsigned x = 0, y = 0, z = 0;
+  if (!(sscanf(u.release, "%u.%u.%u", &x, &y, &z) == 3
+        && x < 100 && y < 100 && z < 1000             ))
+    return 0;
+  return x * 100000 + y * 1000 + z;
 }
 
 // Guess device type (ata or scsi) based on device name (Linux
 // specific) SCSI device name in linux can be sd, sr, scd, st, nst,
 // osst, nosst and sg.
-static const char * lin_dev_prefix = "/dev/";
-static const char * lin_dev_ata_disk_plus = "h";
-static const char * lin_dev_ata_devfs_disk_plus = "ide/";
-static const char * lin_dev_scsi_devfs_disk_plus = "scsi/";
-static const char * lin_dev_scsi_disk_plus = "s";
-static const char * lin_dev_scsi_tape1 = "ns";
-static const char * lin_dev_scsi_tape2 = "os";
-static const char * lin_dev_scsi_tape3 = "nos";
-static const char * lin_dev_3ware_9000_char = "twa";
-static const char * lin_dev_3ware_678k_char = "twe";
-static const char * lin_dev_cciss_dir = "cciss/";
-static const char * lin_dev_areca = "sg";
-
 smart_device * linux_smart_interface::autodetect_smart_device(const char * name)
 {
-  const char * dev_name = name; // TODO: Remove this hack
-  int dev_prefix_len = strlen(lin_dev_prefix);
+  const char * test_name = name;
 
-  // if dev_name null, or string length zero
-  int len;
-  if (!dev_name || !(len = strlen(dev_name)))
-    return 0;
-
-  // Dereference if /dev/disk/by-*/* symlink
-  char linkbuf[100];
-  if (   str_starts_with(dev_name, "/dev/disk/by-")
-      && readlink(dev_name, linkbuf, sizeof(linkbuf)) > 0
-      && str_starts_with(linkbuf, "../../")) {
-    dev_name = linkbuf + sizeof("../../")-1;
+  // Dereference symlinks
+  struct stat st;
+  std::string pathbuf;
+  if (!lstat(name, &st) && S_ISLNK(st.st_mode)) {
+    char * p = realpath(name, (char *)0);
+    if (p) {
+      pathbuf = p;
+      free(p);
+      test_name = pathbuf.c_str();
+    }
   }
+
   // Remove the leading /dev/... if it's there
-  else if (!strncmp(lin_dev_prefix, dev_name, dev_prefix_len)) {
-    if (len <= dev_prefix_len)
-      // if nothing else in the string, unrecognized
-      return 0;
-    // else advance pointer to following characters
-    dev_name += dev_prefix_len;
-  }
+  static const char dev_prefix[] = "/dev/";
+  if (str_starts_with(test_name, dev_prefix))
+    test_name += strlen(dev_prefix);
 
   // form /dev/h* or h*
-  if (!strncmp(lin_dev_ata_disk_plus, dev_name,
-               strlen(lin_dev_ata_disk_plus)))
+  if (str_starts_with(test_name, "h"))
     return new linux_ata_device(this, name, "");
 
   // form /dev/ide/* or ide/*
-  if (!strncmp(lin_dev_ata_devfs_disk_plus, dev_name,
-               strlen(lin_dev_ata_devfs_disk_plus)))
+  if (str_starts_with(test_name, "ide/"))
     return new linux_ata_device(this, name, "");
 
   // form /dev/s* or s*
-  if (!strncmp(lin_dev_scsi_disk_plus, dev_name,
-               strlen(lin_dev_scsi_disk_plus))) {
+  if (str_starts_with(test_name, "s")) {
 
     // Try to detect possible USB->(S)ATA bridge
     unsigned short vendor_id = 0, product_id = 0, version = 0;
-    if (get_usb_id(dev_name, vendor_id, product_id, version)) {
+    if (get_usb_id(test_name, vendor_id, product_id, version)) {
       const char * usbtype = get_usb_dev_type_by_id(vendor_id, product_id, version);
       if (!usbtype)
         return 0;
-      // Linux USB layer does not support 16 byte SAT pass through command
-      if (!strcmp(usbtype, "sat"))
+
+      // Kernels before 2.6.29 do not support the sense data length
+      // required for SAT ATA PASS-THROUGH(16)
+      if (!strcmp(usbtype, "sat") && get_kernel_release() < 206029)
         usbtype = "sat,12";
+
       // Return SAT/USB device for this type
       // (Note: linux_scsi_device::autodetect_open() will not be called in this case)
       return get_sat_device(usbtype, new linux_scsi_device(this, name, ""));
@@ -3057,44 +3003,28 @@ smart_device * linux_smart_interface::autodetect_smart_device(const char * name)
   }
 
   // form /dev/scsi/* or scsi/*
-  if (!strncmp(lin_dev_scsi_devfs_disk_plus, dev_name,
-               strlen(lin_dev_scsi_devfs_disk_plus)))
+  if (str_starts_with(test_name, "scsi/"))
     return new linux_scsi_device(this, name, "");
 
   // form /dev/ns* or ns*
-  if (!strncmp(lin_dev_scsi_tape1, dev_name,
-               strlen(lin_dev_scsi_tape1)))
+  if (str_starts_with(test_name, "ns"))
     return new linux_scsi_device(this, name, "");
 
   // form /dev/os* or os*
-  if (!strncmp(lin_dev_scsi_tape2, dev_name,
-               strlen(lin_dev_scsi_tape2)))
+  if (str_starts_with(test_name, "os"))
     return new linux_scsi_device(this, name, "");
 
   // form /dev/nos* or nos*
-  if (!strncmp(lin_dev_scsi_tape3, dev_name,
-               strlen(lin_dev_scsi_tape3)))
+  if (str_starts_with(test_name, "nos"))
     return new linux_scsi_device(this, name, "");
 
-  // form /dev/twa*
-  if (!strncmp(lin_dev_3ware_9000_char, dev_name,
-               strlen(lin_dev_3ware_9000_char)))
+  // form /dev/tw[ael]* or tw[ael]*
+  if (str_starts_with(test_name, "tw") && strchr("ael", test_name[2]))
     return missing_option("-d 3ware,N");
 
-  // form /dev/twe*
-  if (!strncmp(lin_dev_3ware_678k_char, dev_name,
-               strlen(lin_dev_3ware_678k_char)))
-    return missing_option("-d 3ware,N");
-
-  // form /dev/cciss*
-  if (!strncmp(lin_dev_cciss_dir, dev_name,
-               strlen(lin_dev_cciss_dir)))
+  // form /dev/cciss/* or cciss/*
+  if (str_starts_with(test_name, "cciss/"))
     return missing_option("-d cciss,N");
-
-  // form /dev/sg*
-  if ( !strncmp(lin_dev_areca, dev_name,
-                strlen(lin_dev_areca)) )
-    return missing_option("-d areca,N");
 
   // we failed to recognize any of the forms
   return 0;
@@ -3118,7 +3048,9 @@ smart_device * linux_smart_interface::get_custom_smart_device(const char * name,
       return 0;
     }
 
-    if (!strncmp(name, "/dev/twa", 8))
+    if (!strncmp(name, "/dev/twl", 8))
+      return new linux_escalade_device(this, name, linux_escalade_device::AMCC_3WARE_9700_CHAR, disknum);
+    else if (!strncmp(name, "/dev/twa", 8))
       return new linux_escalade_device(this, name, linux_escalade_device::AMCC_3WARE_9000_CHAR, disknum);
     else if (!strncmp(name, "/dev/twe", 8))
       return new linux_escalade_device(this, name, linux_escalade_device::AMCC_3WARE_678K_CHAR, disknum);
@@ -3153,7 +3085,7 @@ smart_device * linux_smart_interface::get_custom_smart_device(const char * name,
       set_err(EINVAL, "Option '-d hpt,L/M/N' invalid controller id L supplied");
       return 0;
     }
-    if (!(1 <= channel && channel <= 8)) {
+    if (!(1 <= channel && channel <= 16)) {
       set_err(EINVAL, "Option '-d hpt,L/M/N' invalid channel number M supplied");
       return 0;
     }
@@ -3172,8 +3104,8 @@ smart_device * linux_smart_interface::get_custom_smart_device(const char * name,
       set_err(EINVAL, "Option -d cciss,N requires N to be a non-negative integer");
       return 0;
     }
-    if (!(0 <= disknum && disknum <= 15)) {
-      set_err(EINVAL, "Option -d cciss,N (N=%d) must have 0 <= N <= 15", disknum);
+    if (!(0 <= disknum && disknum <= 127)) {
+      set_err(EINVAL, "Option -d cciss,N (N=%d) must have 0 <= N <= 127", disknum);
       return 0;
     }
     return new linux_cciss_device(this, name, disknum);

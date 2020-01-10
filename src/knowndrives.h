@@ -4,8 +4,8 @@
  * Home page of code is: http://smartmontools.sourceforge.net
  * Address of support mailing list: smartmontools-support@lists.sourceforge.net
  *
- * Copyright (C) 2003-8 Philip Williams, Bruce Allen
- * Copyright (C) 2008   Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2003-11 Philip Williams, Bruce Allen
+ * Copyright (C) 2008-11 Christian Franke <smartmontools-support@lists.sourceforge.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,27 +21,9 @@
 #ifndef KNOWNDRIVES_H_
 #define KNOWNDRIVES_H_
 
-#define KNOWNDRIVES_H_CVSID "$Id: knowndrives.h 2975 2009-10-29 22:52:38Z chrfranke $\n"
+#define KNOWNDRIVES_H_CVSID "$Id: knowndrives.h 3288 2011-03-09 18:40:36Z chrfranke $\n"
 
-/* Structure used to store settings for specific drives in knowndrives[]. The
- * elements are used in the following ways:
- *
- *  modelfamily     Informal string about the model family/series of a 
- *                  device. Set to "" if no info (apart from device id)
- *                  known.
- *  modelregexp     POSIX regular expression to match the model of a device.
- *                  This should never be "".
- *  firmwareregexp  POSIX regular expression to match a devices's firmware
- *                  version.  This is optional and should be "" if it is not
- *                  to be used.  If it is nonempty then it will be used to
- *                  narrow the set of devices matched by modelregexp.
- *  warningmsg      A message that may be displayed for matching drives.  For
- *                  example, to inform the user that they may need to apply a
- *                  firmware patch.
- *  presets         String with vendor-specific attribute ('-v') and firmware
- *                  bug fix ('-F') options.  Same syntax as in smartctl command
- *                  line.  The user's own settings override these.
- */
+// Structure to store drive database entries, see drivedb.h for a description.
 struct drive_settings {
   const char * modelfamily;
   const char * modelregexp;
@@ -50,12 +32,20 @@ struct drive_settings {
   const char * presets;
 };
 
-// Searches knowndrives[] for a drive with the given model number and firmware
-// string.
-const drive_settings * lookup_drive(const char * model, const char * firmware);
+// info returned by lookup_usb_device()
+struct usb_dev_info
+{
+  std::string usb_device; // Device name, empty if unknown
+  std::string usb_bridge; // USB bridge name, empty if unknown
+  std::string usb_type;   // Type string ('-d' option).
+};
+
+// Search drivedb for USB device with vendor:product ID.
+int lookup_usb_device(int vendor_id, int product_id, int bcd_device,
+                      usb_dev_info & info, usb_dev_info & info2);
 
 // Shows the presets (if any) that are available for the given drive.
-void show_presets(const ata_identify_device * drive, bool fix_swapped_id);
+void show_presets(const ata_identify_device * drive);
 
 // Shows all presets for drives in knowndrives[].
 // Returns #syntax errors.
@@ -65,12 +55,21 @@ int showallpresets();
 // Returns # matching entries.
 int showmatchingpresets(const char *model, const char *firmware);
 
-// Sets preset vendor attribute options in opts by finding the entry
-// (if any) for the given drive in knowndrives[].  Values that have
-// already been set in opts will not be changed.  Also sets options in
-// con.  Returns false if drive not recognized.
-bool apply_presets(const ata_identify_device * drive, ata_vendor_attr_defs & defs,
-                   unsigned char & fix_firmwarebug, bool fix_swapped_id);
+// Searches drive database and sets preset vendor attribute
+// options in defs and fix_firmwarebug.
+// Values that have already been set will not be changed.
+// Returns pointer to database entry or nullptr if none found.
+const drive_settings * lookup_drive_apply_presets(
+  const ata_identify_device * drive, ata_vendor_attr_defs & defs,
+  unsigned char & fix_firmwarebug);
+
+// Get path for additional database file
+const char * get_drivedb_path_add();
+
+#ifdef SMARTMONTOOLS_DRIVEDBDIR
+// Get path for default database file
+const char * get_drivedb_path_default();
+#endif
 
 // Read drive database from file.
 bool read_drive_database(const char * path);

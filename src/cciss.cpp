@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
+#include <errno.h>
 
 #include "config.h"
 
@@ -14,24 +15,27 @@
 #    define _HAVE_CCISS
 #  endif
 #  include <asm/byteorder.h>
-#  define be32toh __be32_to_cpu
-#elif defined(__FreeBSD__) && defined(HAVE_DEV_CISS_CISSIO_H)
+#  ifndef be32toh
+#    define be32toh __be32_to_cpu
+#  endif
+#elif defined(__FreeBSD__)
 #  include <sys/endian.h>
-#  include <dev/ciss/cissio.h>
+#  include CISS_LOCATION
 #  define _HAVE_CCISS
-#elif defined(__FreeBSD_kernel__) && defined(HAVE_DEV_CISS_CISSIO_H)
+#elif defined(__FreeBSD_kernel__)
 #  include <endian.h>
-#  include <dev/ciss/cissio.h>
+#  include CISS_LOCATION
 #  define _HAVE_CCISS
 #endif
 
 #ifdef _HAVE_CCISS
+#include "cciss.h"
 #include "int64.h"
 #include "scsicmds.h"
 #include "utility.h"
 
-const char *cciss_c_cvsid="$Id: cciss.cpp,v 1.9 2008/07/30 20:42:53 chrfranke Exp $"
-CONFIG_H_CVSID INT64_H_CVSID SCSICMDS_H_CVSID UTILITY_H_CVSID;
+const char * cciss_cpp_cvsid = "$Id: cciss.cpp 3446 2011-10-13 22:36:28Z samm2 $"
+  CCISS_H_CVSID;
 
 typedef struct _ReportLUNdata_struct
 {

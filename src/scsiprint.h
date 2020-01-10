@@ -7,7 +7,7 @@
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
  *
  * Additional SCSI work:
- * Copyright (C) 2003-9 Douglas Gilbert <dougg@torque.net>
+ * Copyright (C) 2003-10 Douglas Gilbert <dgilbert@interlog.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,10 +29,9 @@
 #ifndef SCSI_PRINT_H_
 #define SCSI_PRINT_H_
 
-#define SCSIPRINT_H_CVSID "$Id: scsiprint.h,v 1.24 2009/06/21 02:39:32 dpgilbert Exp $\n"
+#define SCSIPRINT_H_CVSID "$Id: scsiprint.h 3413 2011-09-06 21:23:00Z dpgilbert $\n"
 
 // Options for scsiPrintMain
-// TODO: Move remaining options from con->* to here.
 struct scsi_print_options
 {
   bool drive_info;
@@ -41,6 +40,7 @@ struct scsi_print_options
   bool smart_error_log;
   bool smart_selftest_log;
   bool smart_background_log;
+  bool smart_ss_media_log;
 
   bool smart_disable, smart_enable;
   bool smart_auto_save_disable, smart_auto_save_enable;
@@ -59,6 +59,7 @@ struct scsi_print_options
       smart_error_log(false),
       smart_selftest_log(false),
       smart_background_log(false),
+      smart_ss_media_log(false),
       smart_disable(false), smart_enable(false),
       smart_auto_save_disable(false), smart_auto_save_enable(false),
       smart_default_selftest(false),

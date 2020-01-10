@@ -26,7 +26,7 @@
 #ifndef ATAPRINT_H_
 #define ATAPRINT_H_
 
-#define ATAPRINT_H_CVSID "$Id: ataprint.h 2975 2009-10-29 22:52:38Z chrfranke $\n"
+#define ATAPRINT_H_CVSID "$Id: ataprint.h 3435 2011-10-11 19:01:42Z chrfranke $\n"
 
 #include <vector>
 
@@ -44,7 +44,6 @@ struct ata_log_request
 };
 
 // Options for ataPrintMain
-// TODO: Move remaining options from con->* to here.
 struct ata_print_options
 {
   bool drive_info;
@@ -62,7 +61,13 @@ struct ata_print_options
 
   std::vector<ata_log_request> log_requests;
 
+  bool devstat_all_pages, devstat_ssd_page;
+  std::vector<int> devstat_pages;
+
   bool sct_temp_sts, sct_temp_hist;
+  bool sct_erc_get;
+  bool sct_erc_set;
+  unsigned sct_erc_readtime, sct_erc_writetime;
   bool sataphy, sataphy_reset;
 
   bool smart_disable, smart_enable;
@@ -75,6 +80,7 @@ struct ata_print_options
   unsigned sct_temp_int;
   bool sct_temp_int_pers;
 
+  unsigned char output_format; // 0=old, 1=brief
   unsigned char fix_firmwarebug; // FIX_*, see atacmds.h
   bool fix_swapped_id; // Fix swapped ID strings returned by some buggy drivers
 
@@ -96,13 +102,18 @@ struct ata_print_options
       smart_ext_error_log(0),
       smart_ext_selftest_log(0),
       retry_error_log(false), retry_selftest_log(false),
+      devstat_all_pages(false), devstat_ssd_page(false),
       sct_temp_sts(false), sct_temp_hist(false),
+      sct_erc_get(false),
+      sct_erc_set(false),
+      sct_erc_readtime(0), sct_erc_writetime(0),
       sataphy(false), sataphy_reset(false),
       smart_disable(false), smart_enable(false),
       smart_auto_offl_disable(false), smart_auto_offl_enable(false),
       smart_auto_save_disable(false), smart_auto_save_enable(false),
       smart_selftest_type(-1),
       sct_temp_int(0), sct_temp_int_pers(false),
+      output_format(0),
       fix_firmwarebug(FIX_NOTSPECIFIED),
       fix_swapped_id(false),
       ignore_presets(false),

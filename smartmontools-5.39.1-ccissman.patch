@@ -1,11 +1,11 @@
-diff -up smartmontools-5.39.1/smartctl.8.in.ccissman smartmontools-5.39.1/smartctl.8.in
---- smartmontools-5.39.1/smartctl.8.in.ccissman	2010-01-28 21:24:33.000000000 +0100
-+++ smartmontools-5.39.1/smartctl.8.in	2011-01-24 17:06:19.079960149 +0100
-@@ -405,6 +405,23 @@ of the HighPoint RocketRAID controller.
+diff -up smartmontools-5.42/smartctl.8.in.ccissman smartmontools-5.42/smartctl.8.in
+--- smartmontools-5.42/smartctl.8.in.ccissman	2012-02-13 11:08:46.000000000 +0100
++++ smartmontools-5.42/smartctl.8.in	2012-02-13 11:25:07.217623142 +0100
+@@ -464,6 +464,23 @@ from 0 to 15 inclusive) denotes which di
+ If the controller firmware or driver provides a SAT Layer it may be possible
+ to monitor also SATA disks by specifiying \'\-d sat+cciss,N\'.
  
- .B HighPoint RocketRAID controllers are currently ONLY supported under Linux and FreeBSD.
- 
-+If you are using the cciss driver, the correct syntax is
++If you are using the cciss driver, use syntax such as:
 +.nf
 +\fBsmartctl \-a \-d cciss,0 /dev/cciss/c0d0\fP
 +.fi
@@ -13,7 +13,7 @@ diff -up smartmontools-5.39.1/smartctl.8.in.ccissman smartmontools-5.39.1/smartc
 +connect to the controller at /dev/cciss/c0d0 . (Disk drive numbering is 0
 +based)
 +
-+If you are using the hpsa driver, the correct syntax is
++If you are using the hpsa driver, use syntax such as:
 +.nf
 +\fBsmartctl \-a \-d cciss,1 /dev/sg0\fP
 +.fi
@@ -22,6 +22,6 @@ diff -up smartmontools-5.39.1/smartctl.8.in.ccissman smartmontools-5.39.1/smartc
 +
 +To get the controller device node you will need to run \fBlsscsi \-g\fP.
 +
- .B cciss controllers are currently ONLY supported under Linux and FreeBSD.
- 
- .TP
+ .I hpt,L/M/N
+ \- [FreeBSD and Linux only] the device consists of one or more ATA disks
+ connected to a HighPoint RocketRAID controller.  The integer L is the

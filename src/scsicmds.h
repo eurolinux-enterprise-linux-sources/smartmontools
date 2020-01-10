@@ -7,7 +7,7 @@
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
  *
  * Additional SCSI work:
- * Copyright (C) 2003-8 Douglas Gilbert <dougg@torque.net>
+ * Copyright (C) 2003-11 Douglas Gilbert <dgilbert@interlog.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,12 +32,11 @@
 #ifndef SCSICMDS_H_
 #define SCSICMDS_H_
 
-#define SCSICMDS_H_CVSID "$Id: scsicmds.h 2924 2009-09-26 20:38:40Z chrfranke $\n"
+#define SCSICMDS_H_CVSID "$Id: scsicmds.h 3413 2011-09-06 21:23:00Z dpgilbert $\n"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 
 /* #define SCSI_DEBUG 1 */ /* Comment out to disable command debugging */
 
@@ -78,6 +77,21 @@
 #endif
 #ifndef READ_DEFECT_10
 #define READ_DEFECT_10  0x37
+#endif
+#ifndef START_STOP_UNIT
+#define START_STOP_UNIT  0x1b
+#endif
+#ifndef REPORT_LUNS
+#define REPORT_LUNS  0xa0
+#endif
+#ifndef READ_CAPACITY_10
+#define READ_CAPACITY_10  0x25
+#endif
+#ifndef READ_CAPACITY_16
+#define READ_CAPACITY_16  0x9e
+#endif
+#ifndef SAI_READ_CAPACITY_16    /* service action for READ_CAPACITY_16 */
+#define SAI_READ_CAPACITY_16  0x10
 #endif
 
 #ifndef SAT_ATA_PASSTHROUGH_12
@@ -169,11 +183,14 @@ struct scsiNonMediumError {
 #define NON_MEDIUM_ERROR_LPAGE                  0x06
 #define LAST_N_ERROR_LPAGE                      0x07
 #define FORMAT_STATUS_LPAGE                     0x08
+#define LB_PROV_LPAGE                           0x0c   /* SBC-3 */
 #define TEMPERATURE_LPAGE                       0x0d
 #define STARTSTOP_CYCLE_COUNTER_LPAGE           0x0e
 #define APPLICATION_CLIENT_LPAGE                0x0f
 #define SELFTEST_RESULTS_LPAGE                  0x10
+#define SS_MEDIA_LPAGE                          0x11   /* SBC-3 */
 #define BACKGROUND_RESULTS_LPAGE                0x15   /* SBC-3 */
+#define NONVOL_CACHE_LPAGE                      0x17   /* SBC-3 */
 #define PROTOCOL_SPECIFIC_LPAGE                 0x18
 #define IE_LPAGE                                0x2f
 
@@ -284,12 +301,23 @@ Documentation, see http://www.storage.ibm.com/techsup/hddtech/prodspecs.htm */
 
 class scsi_device;
 
+// Print SCSI debug messages?
+extern unsigned char scsi_debugmode;
+
 void scsi_do_sense_disect(const struct scsi_cmnd_io * in,
                           struct scsi_sense_disect * out);
 
 int scsiSimpleSenseFilter(const struct scsi_sense_disect * sinfo);
 
 const char * scsiErrString(int scsiErr);
+
+int scsi_vpd_dev_id_iter(const unsigned char * initial_desig_desc,
+                         int page_len, int * off, int m_assoc,
+                         int m_desig_type, int m_code_set);
+
+int scsi_decode_lu_dev_id(const unsigned char * b, int blen, char * s,
+                          int slen, int * transport);
+
 
 /* STANDARD SCSI Commands  */
 int scsiTestUnitReady(scsi_device * device);
@@ -326,6 +354,14 @@ int scsiReceiveDiagnostic(scsi_device * device, int pcv, int pagenum, UINT8 *pBu
 int scsiReadDefect10(scsi_device * device, int req_plist, int req_glist, int dl_format,
                      UINT8 *pBuf, int bufLen);
 
+int scsiReadCapacity10(scsi_device * device, unsigned int * last_lbp,
+                       unsigned int * lb_sizep);
+
+int scsiReadCapacity16(scsi_device * device, UINT8 *pBuf, int bufLen);
+
+uint64_t scsiGetSize(scsi_device * device, unsigned int * lb_sizep);
+
+
 /* SMART specific commands */
 int scsiCheckIE(scsi_device * device, int hasIELogPage, int hasTempLogPage, UINT8 *asc,
                 UINT8 *ascq, UINT8 *currenttemp, UINT8 *triptemp);
@@ -348,8 +384,8 @@ int scsiFetchControlGLTSD(scsi_device * device, int modese_len, int current);
 int scsiSetControlGLTSD(scsi_device * device, int enabled, int modese_len);
 int scsiFetchTransportProtocol(scsi_device * device, int modese_len);
 
-/* T10 Standard IE Additional Sense Code strings taken from t10.org */
 
+/* T10 Standard IE Additional Sense Code strings taken from t10.org */
 const char* scsiGetIEString(UINT8 asc, UINT8 ascq);
 int scsiGetTemp(scsi_device * device, UINT8 *currenttemp, UINT8 *triptemp);
 

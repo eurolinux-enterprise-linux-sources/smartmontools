@@ -1,23 +1,20 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
-Version:	5.39.1
-Release:	5%{?dist}
+Version:	5.42
+Release:	2%{?dist}
 Epoch:		1
 Group:		System Environment/Base
 License:	GPLv2+
 URL:		http://smartmontools.sourceforge.net/
-Source0:	http://prdownloads.sourceforge.net/%{name}/%{name}-%{version}.tar.gz
+Source0:	http://downloads.sourceforge.net/%{name}/%{name}-%{version}.tar.gz
 Source1:	smartd.initd
 Source2:	smartmontools.sysconf
+Source3:        update-smart-drivedb.man
 
 #fedora/rhel specific
 Patch1:		smartmontools-5.38-defaultconf.patch
 
-#libcap-ng new feature, testing for now
-Patch2:		smartmontools-5.38-lowcap.patch
-
-#from upstream, fixes crash with selftest on megaraid, for <= 5.40, rhbz#653434
-Patch3:		smartmontools-5.40-megaraid.patch
+Patch3:         smartmontools-5.40-manfix.patch
 
 # extra example for cciss in man page, rhbz#632423
 Patch4:		smartmontools-5.39.1-ccissman.patch
@@ -38,8 +35,7 @@ failure.
 %prep
 %setup -q
 %patch1 -p1 -b .defaultconf
-%patch2 -p1 -b .lowcap
-%patch3 -p1 -b .mrstc
+%patch3 -p1 -b .manfix
 %patch4 -p1 -b .ccissman
 
 # fix encoding
@@ -53,7 +49,7 @@ done
 %build
 ln -s CHANGELOG ChangeLog
 autoreconf -i
-%configure --with-selinux --with-libcap-ng=yes
+%configure --with-selinux --with-libcap-ng=yes -with-systemdsystemunitdir=no
 %ifarch sparc64
 make CXXFLAGS="$RPM_OPT_FLAGS -fPIE -fno-strict-aliasing" LDFLAGS="-pie -Wl,-z,relro,-z,now"
 %else
@@ -69,6 +65,9 @@ rm -f examplescripts/Makefile*
 chmod a-x -R examplescripts/*
 install -D -m 755 %{SOURCE1} $RPM_BUILD_ROOT%{_sysconfdir}/rc.d/init.d/smartd
 install -D -m 644 %{SOURCE2} $RPM_BUILD_ROOT%{_sysconfdir}/sysconfig/smartmontools
+install -D -m 644 %{SOURCE3} $RPM_BUILD_ROOT%{_mandir}/man8/update-smart-drivedb.8
+rm -rf $RPM_BUILD_ROOT/%{_docdir}/%{name}
+
 
 %clean
 rm -rf $RPM_BUILD_ROOT
@@ -87,13 +86,24 @@ fi
 %doc AUTHORS CHANGELOG COPYING INSTALL NEWS README
 %doc TODO WARNINGS examplescripts smartd.conf
 %{_sbindir}/smartd
+%{_sbindir}/update-smart-drivedb
 %{_sbindir}/smartctl
 %{_initddir}/smartd
 %{_mandir}/man?/smart*.*
+%{_mandir}/man8/update-smart-drivedb.*
+%{_datadir}/%{name}
 %config(noreplace) %{_sysconfdir}/smartd.conf
 %config(noreplace) %{_sysconfdir}/sysconfig/smartmontools
 
 %changelog
+* Mon Feb 13 2012 Michal Hlavinka <mhlavink@redhat.com> - 1:5.42-2
+- add man page for update-smart-drivedb
+
+* Mon Feb 13 2012 Michal Hlavinka <mhlavink@redhat.com> - 1:5.42-1
+- updated to 5.42 (#698317)
+- improve 3ware raid controller support (#697235)
+- fix SCSI log page sanity check (#784925)
+
 * Tue Aug 02 2011 Michal Hlavinka <mhlavink@redhat.com> - 1:5.39.1-5
 - do not use strict aliasing
 
