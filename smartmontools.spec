@@ -1,7 +1,7 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
 Version:	5.43
-Release:	1%{?dist}
+Release:	3%{?dist}
 Epoch:		1
 Group:		System Environment/Base
 License:	GPLv2+
@@ -18,6 +18,9 @@ Patch3:         smartmontools-5.40-manfix.patch
 
 # extra example for cciss in man page, rhbz#632423
 Patch4:		smartmontools-5.39.1-ccissman.patch
+Patch5:		smartmontools-5.43-up2datedrivedb.patch
+Patch6:		smartmontools-6.2-drivedbman.patch
+Patch7:		smartmontools-5.43-newdrivedbupdate.patch
 
 BuildRoot:	%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 Requires:	fileutils mailx chkconfig initscripts
@@ -37,6 +40,9 @@ failure.
 %patch1 -p1 -b .defaultconf
 %patch3 -p1 -b .manfix
 %patch4 -p1 -b .ccissman
+%patch5 -p1 -b .up2datedrivedb
+%patch6 -p1 -b .drivedbman
+%patch7 -p1 -b .newdrivedbupdate
 
 # fix encoding
 for fe in AUTHORS CHANGELOG
@@ -96,6 +102,12 @@ fi
 %config(noreplace) %{_sysconfdir}/sysconfig/smartmontools
 
 %changelog
+* Wed Oct 12 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:5.43-3
+- fix drivedb update script (#1367234)
+
+* Sun Oct 09 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:5.43-2
+- use up to date drivedb (#1222964)
+
 * Tue Sep 25 2012 Michal Hlavinka <mhlavink@redhat.com> - 1:5.43-1
 - smartmontools updated to 5.43 (#826144)
 
