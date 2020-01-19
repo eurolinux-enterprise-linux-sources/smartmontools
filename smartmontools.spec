@@ -1,7 +1,7 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
 Version:	6.2
-Release:	7%{?dist}
+Release:	8%{?dist}
 Epoch:		1
 Group:		System Environment/Base
 License:	GPLv2+
@@ -18,6 +18,7 @@ Patch2: smartmontools-6.4-fdleak.patch
 Patch3: smartmontools-6.2-discovermore.patch
 Patch4: smartmontools-6.2-httpsdrivedb.patch
 Patch5: smartmontools-6.2-drivedbman.patch
+Patch6: smartmontools-6.2-up2datedrivedb.patch
 
 BuildRoot:	%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 Requires:	fileutils mailx chkconfig
@@ -45,6 +46,7 @@ failure.
 %patch3 -p1 -b .discovermore
 %patch4 -p1 -b .httpsdrivedb
 %patch5 -p1 -b .drivedbman
+%patch6 -p1 -b .up2datedrivedb
 
 # fix encoding
 for fe in AUTHORS ChangeLog
@@ -119,6 +121,10 @@ fi
 %{_datadir}/%{name}
 
 %changelog
+* Sun Mar 26 2017 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-8
+- use up to date drivedb (#1388510)
+- less scarry messages reported to users (#1340462)
+
 * Wed Sep 07 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-7
 - add update-smart-drivedb.8 man page (#1367237)
 - fix drivedb update url (#1364830)
