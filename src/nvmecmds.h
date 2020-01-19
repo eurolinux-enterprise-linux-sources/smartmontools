@@ -3,29 +3,22 @@
  *
  * Home page of code is: http://www.smartmontools.org
  *
- * Copyright (C) 2016 Christian Franke
+ * Copyright (C) 2016-18 Christian Franke
  *
  * Original code from <linux/nvme.h>:
  *   Copyright (C) 2011-2014 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * You should have received a copy of the GNU General Public License
- * (for example COPYING); If not, see <http://www.gnu.org/licenses/>.
- *
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef NVMECMDS_H
 #define NVMECMDS_H
 
-#define NVMECMDS_H_CVSID "$Id: nvmecmds.h 4297 2016-04-16 16:48:01Z chrfranke $"
+#define NVMECMDS_H_CVSID "$Id: nvmecmds.h 4842 2018-12-02 16:07:26Z chrfranke $"
 
-#include "int64.h"
+#include <stdint.h>
 
-// The code below was orginally imported from <linux/nvme.h> include file from
+// The code below was originally imported from <linux/nvme.h> include file from
 // Linux kernel sources.  Types from <linux/types.h> were replaced.
 // Symbol names are unchanged but placed in a namespace to allow inclusion
 // of the original <linux/nvme.h>.
@@ -33,19 +26,6 @@ namespace smartmontools {
 
 ////////////////////////////////////////////////////////////////////////////
 // BEGIN: From <linux/nvme.h>
-/*
- * Definitions for the NVM Express interface
- * Copyright (c) 2011-2014, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- */
 
 struct nvme_error_log_page {
   uint64_t        error_count;
@@ -92,7 +72,8 @@ struct nvme_id_ctrl {
   unsigned int    rtd3r;
   unsigned int    rtd3e;
   unsigned int    oaes;
-  unsigned char   rsvd96[160];
+  unsigned int    ctratt;
+  unsigned char   rsvd100[156];
   unsigned short  oacs;
   unsigned char   acl;
   unsigned char   aerl;
@@ -110,10 +91,18 @@ struct nvme_id_ctrl {
   unsigned char   tnvmcap[16];
   unsigned char   unvmcap[16];
   unsigned int    rpmbs;
-  unsigned char   rsvd316[196];
+  unsigned short  edstt;
+  unsigned char   dsto;
+  unsigned char   fwug;
+  unsigned short  kas;
+  unsigned short  hctma;
+  unsigned short  mntmt;
+  unsigned short  mxtmt;
+  unsigned int    sanicap;
+  unsigned char   rsvd332[180];
   unsigned char   sqes;
   unsigned char   cqes;
-  unsigned char   rsvd514[2];
+  unsigned short  maxcmd;
   unsigned int    nn;
   unsigned short  oncs;
   unsigned short  fuses;
@@ -126,7 +115,15 @@ struct nvme_id_ctrl {
   unsigned short  acwu;
   unsigned char   rsvd534[2];
   unsigned int    sgls;
-  unsigned char   rsvd540[1508];
+  unsigned char   rsvd540[228];
+  char			      subnqn[256];
+  unsigned char   rsvd1024[768];
+  unsigned int    ioccsz;
+  unsigned int    iorcsz;
+  unsigned short  icdoff;
+  unsigned char   ctrattr;
+  unsigned char   msdbd;
+  unsigned char   rsvd1804[244];
   struct nvme_id_power_state  psd[32];
   unsigned char   vs[1024];
 };
@@ -187,7 +184,11 @@ struct nvme_smart_log {
   unsigned int   warning_temp_time;
   unsigned int   critical_comp_time;
   unsigned short temp_sensor[8];
-  unsigned char  rsvd216[296];
+  unsigned int   thm_temp1_trans_count;
+  unsigned int   thm_temp2_trans_count;
+  unsigned int   thm_temp1_total_time;
+  unsigned int   thm_temp2_total_time;
+  unsigned char  rsvd232[280];
 };
 
 enum nvme_admin_opcode {
@@ -227,7 +228,8 @@ bool nvme_read_id_ctrl(nvme_device * device, smartmontools::nvme_id_ctrl & id_ct
 bool nvme_read_id_ns(nvme_device * device, unsigned nsid, smartmontools::nvme_id_ns & id_ns);
 
 // Read NVMe log page with identifier LID.
-bool nvme_read_log_page(nvme_device * device, unsigned char lid, void * data, unsigned size);
+bool nvme_read_log_page(nvme_device * device, unsigned char lid, void * data,
+	       		unsigned size, bool broadcast_nsid);
 
 // Read NVMe Error Information Log.
 bool nvme_read_error_log(nvme_device * device, smartmontools::nvme_error_log_page * error_log,

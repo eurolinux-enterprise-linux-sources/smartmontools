@@ -1,6 +1,6 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
-Version:	6.5
+Version:	7.0
 Release:	1%{?dist}
 Epoch:		1
 Group:		System Environment/Base
@@ -23,7 +23,7 @@ Requires(preun):	systemd-units
 Requires(postun):	systemd-units
 BuildRequires:	readline-devel ncurses-devel automake util-linux groff gettext
 BuildRequires:	libselinux-devel libcap-ng-devel
-BuildRequires:	systemd-units
+BuildRequires:	systemd systemd-libs systemd-devel
 
 %description
 The smartmontools package contains two utility programs (smartctl
@@ -48,7 +48,7 @@ done
 
 %build
 autoreconf -i
-%configure --with-selinux --with-libcap-ng=yes --with-systemdsystemunitdir=%{_unitdir} --sysconfdir=%{_sysconfdir}/%name/
+%configure --with-selinux --with-libcap-ng=yes --with-libsystemd --with-systemdsystemunitdir=%{_unitdir} --sysconfdir=%{_sysconfdir}/%name/
 %ifarch sparc64
 make CXXFLAGS="$RPM_OPT_FLAGS -fPIE" LDFLAGS="-pie -Wl,-z,relro,-z,now"
 %else
@@ -94,8 +94,9 @@ fi
 
 %files
 %defattr(-,root,root,-)
-%doc AUTHORS ChangeLog COPYING INSTALL NEWS README
+%doc AUTHORS ChangeLog INSTALL NEWS README
 %doc TODO examplescripts smartd.conf
+%license COPYING
 %dir %{_sysconfdir}/%name
 %dir %{_sysconfdir}/%name/smartd_warning.d
 %config(noreplace) %{_sysconfdir}/%{name}/smartd.conf
@@ -111,6 +112,10 @@ fi
 %{_datadir}/%{name}
 
 %changelog
+* Thu Feb 14 2019 Michal Hlavinka <mhlavink@redhat.com> - 1:7.0-1
+- smartmontools updated to 7.0 (#1588532)
+- fixed detection of Device Statistics log with 256 sectors (#1590190)
+
 * Wed Oct 11 2017 Michal Hlavinka <mhlavink@redhat.com> - 1:6.5-1
 - smartmontools updated to 6.5
 - adds support for NVMe devices (#1369731)
