@@ -1,20 +1,21 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
-Version:	6.2
-Release:	4%{?dist}
+Version:	6.5
+Release:	1%{?dist}
 Epoch:		1
 Group:		System Environment/Base
 License:	GPLv2+
-URL:		http://smartmontools.sourceforge.net/
-Source0:	http://downloads.sourceforge.net/%{name}/%{name}-%{version}.tar.gz
+URL:		https://www.smartmontools.org/
+Source0:	https://downloads.sourceforge.net/%{name}/%{name}-%{version}.tar.gz
 Source2:	smartmontools.sysconf
 Source4:	smartdnotify
 
 #fedora/rhel specific
 Patch1:		smartmontools-5.38-defaultconf.patch
+Patch2:         smartmontools-6.2-up2datedrivedb.patch
 
 BuildRoot:	%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
-Requires:	fileutils mailx chkconfig
+Requires:	fileutils mailx
 #new rpm does not handle this (yet?)
 #Requires(triggerun):	systemd-units
 Requires(post):		systemd-units
@@ -27,14 +28,15 @@ BuildRequires:	systemd-units
 %description
 The smartmontools package contains two utility programs (smartctl
 and smartd) to control and monitor storage systems using the Self-
-Monitoring, Analysis and Reporting Technology System (SMART) built
-into most modern ATA and SCSI hard disks. In many cases, these
-utilities will provide advanced warning of disk degradation and
-failure.
+Monitoring, Analysis and Reporting Technology system (SMART) built
+into most modern ATA/SATA, SCSI/SAS and NVMe disks. In many cases,
+these utilities will provide advanced warning of disk degradation
+and failure.
 
 %prep
 %setup -q 
 %patch1 -p1 -b .defaultconf
+%patch2 -p1 -b .up2datedrivedb
 
 # fix encoding
 for fe in AUTHORS ChangeLog
@@ -93,7 +95,7 @@ fi
 %files
 %defattr(-,root,root,-)
 %doc AUTHORS ChangeLog COPYING INSTALL NEWS README
-%doc TODO WARNINGS examplescripts smartd.conf
+%doc TODO examplescripts smartd.conf
 %dir %{_sysconfdir}/%name
 %dir %{_sysconfdir}/%name/smartd_warning.d
 %config(noreplace) %{_sysconfdir}/%{name}/smartd.conf
@@ -104,10 +106,30 @@ fi
 %{_sbindir}/update-smart-drivedb
 %{_sbindir}/smartctl
 %{_mandir}/man?/smart*.*
+%{_mandir}/man8/update-smart-drivedb.8*
 %{_libexecdir}/%{name}
 %{_datadir}/%{name}
 
 %changelog
+* Wed Oct 11 2017 Michal Hlavinka <mhlavink@redhat.com> - 1:6.5-1
+- smartmontools updated to 6.5
+- adds support for NVMe devices (#1369731)
+- minor spec cleanup (#1463148)
+
+* Sun Mar 26 2017 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-8
+- use up to date drivedb (#1388510)
+- less scarry messages reported to users (#1340462)
+
+* Wed Sep 07 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-7
+- add update-smart-drivedb.8 man page (#1367237)
+- fix drivedb update url (#1364830)
+
+* Thu May 05 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-6
+- allow to discover more devices (#1294999)
+
+* Mon May 02 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-5
+- do not leak file descriptor when calling mailx (#1212582)
+
 * Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 1:6.2-4
 - Mass rebuild 2014-01-24
 

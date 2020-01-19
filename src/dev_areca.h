@@ -1,7 +1,7 @@
 /*
  * dev_areca.h
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
  * Copyright (C) 2012 Hank Wu <hank@areca.com.tw>
  *
@@ -18,7 +18,7 @@
 #ifndef DEV_ARECA_H
 #define DEV_ARECA_H
 
-#define DEV_ARECA_H_CVSID "$Id: dev_areca.h 3763 2013-01-31 22:25:25Z chrfranke $"
+#define DEV_ARECA_H_CVSID "$Id: dev_areca.h 4146 2015-10-17 12:12:49Z chrfranke $"
 
 /////////////////////////////////////////////////////////////////////////////
 /// Areca RAID support
@@ -58,7 +58,7 @@ ARCMSR_CMD_TOTAL
 #define ARCMSR_IOCTL_CLEAR_RQBUFFER          (ARECA_SATA_RAID | FUNCTION_CLEAR_RQBUFFER)
 #define ARCMSR_IOCTL_CLEAR_WQBUFFER          (ARECA_SATA_RAID | FUNCTION_CLEAR_WQBUFFER)
 #define ARCMSR_IOCTL_RETURN_CODE_3F          (ARECA_SATA_RAID | FUNCTION_RETURN_CODE_3F)
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
 #include <sys/ioctl.h> // _IOWR
 
 /*FunctionCode*/
@@ -118,9 +118,10 @@ public:
   virtual bool arcmsr_ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out);
 
 protected:
-  generic_areca_device() : smart_device(never_called)
-  {
-  }
+  generic_areca_device()
+    : smart_device(never_called),
+      m_disknum(-1), m_encnum(-1)
+      { }
 
   void set_disknum(int disknum)
   {m_disknum = disknum;}

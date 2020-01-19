@@ -60,9 +60,6 @@
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
 
-/* Define to 1 if you have the <netdb.h> header file. */
-#undef HAVE_NETDB_H
-
 /* Define to 1 if you have the <ntdddisk.h> header file. */
 #undef HAVE_NTDDDISK_H
 
@@ -123,7 +120,7 @@
 /* Define to 1 if you have the <wbemcli.h> header file. */
 #undef HAVE_WBEMCLI_H
 
-/* Define to 1 if the `snprintf' function is sane */
+/* Define to 1 if the `snprintf' function is sane. */
 #undef HAVE_WORKING_SNPRINTF
 
 /* Define to 1 if os_*.cpp still uses the old interface */
@@ -159,9 +156,6 @@
 /* smartmontools Configure Arguments */
 #undef SMARTMONTOOLS_CONFIGURE_ARGS
 
-/* smartmontools Configure Date */
-#undef SMARTMONTOOLS_CONFIGURE_DATE
-
 /* smartmontools Release Date */
 #undef SMARTMONTOOLS_RELEASE_DATE
 
@@ -174,8 +168,14 @@
 /* Version number of package */
 #undef VERSION
 
+/* Define to 1 to include NVMe devices in smartd DEVICESCAN. */
+#undef WITH_NVME_DEVICESCAN
+
 /* Define to 1 if SELinux support is enabled */
 #undef WITH_SELINUX
+
+/* Define to 1 to enable legacy ATA support on Solaris SPARC. */
+#undef WITH_SOLARIS_SPARC_ATA
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */

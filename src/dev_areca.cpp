@@ -1,7 +1,7 @@
 /*
  * dev_areca.cpp
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
  * Copyright (C) 2012 Hank Wu <hank@areca.com.tw>
  *
@@ -21,7 +21,7 @@
 #include "dev_interface.h"
 #include "dev_areca.h"
 
-const char * dev_areca_cpp_cvsid = "$Id: dev_areca.cpp 3835 2013-07-20 18:37:19Z chrfranke $"
+const char * dev_areca_cpp_cvsid = "$Id: dev_areca.cpp 4209 2016-01-22 20:49:44Z chrfranke $"
   DEV_ARECA_H_CVSID;
 
 #include "atacmds.h"
@@ -114,7 +114,10 @@ generic_areca_device::~generic_areca_device() throw()
 //   1 if the command succeeded and disk SMART status is "FAILING"
 int generic_areca_device::arcmsr_command_handler(unsigned long arcmsr_cmd, unsigned char *data, int data_len)
 {
-  unsigned int cmds[] =
+  if (arcmsr_cmd >= ARCMSR_CMD_TOTAL)
+    return -1;
+
+  static const unsigned int cmds[ARCMSR_CMD_TOTAL] =
   {
     ARCMSR_IOCTL_READ_RQBUFFER,
     ARCMSR_IOCTL_WRITE_WQBUFFER,
@@ -144,11 +147,6 @@ int generic_areca_device::arcmsr_command_handler(unsigned long arcmsr_cmd, unsig
   memcpy(sBuf.srbioctl.Signature, ARECA_SIG_STR, strlen(ARECA_SIG_STR));
   sBuf.srbioctl.Timeout = 10000;
   sBuf.srbioctl.ControlCode = cmds[arcmsr_cmd];
-
-  if(arcmsr_cmd >= ARCMSR_CMD_TOTAL)
-  {
-      return -1;
-  }
 
   switch ( arcmsr_cmd )
   {
@@ -299,14 +297,14 @@ int generic_areca_device::arcmsr_ui_handler(unsigned char *areca_packet, int are
   if (expected==-3) {
     return set_err(EIO);
   }
-  expected = arcmsr_command_handler(ARCMSR_CLEAR_WQBUFFER, NULL, 0);
+  arcmsr_command_handler(ARCMSR_CLEAR_WQBUFFER, NULL, 0);
   expected = arcmsr_command_handler(ARCMSR_WRITE_WQBUFFER, areca_packet, areca_packet_len);
   if ( expected > 0 )
   {
     expected = arcmsr_command_handler(ARCMSR_READ_RQBUFFER, return_buff, sizeof(return_buff));
   }
 
-  if ( expected < 0 )
+  if ( expected < 3 + 1 ) // Prefix + Checksum
   {
     return -1;
   }

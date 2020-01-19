@@ -1,11 +1,17 @@
 #!/bin/sh
-# $Id: autogen.sh 3829 2013-07-08 15:13:16Z samm2 $
+# $Id: autogen.sh 4115 2015-07-15 20:52:26Z chrfranke $
 #
-# Generate ./configure from config.in and Makefile.in from Makefile.am.
+# Generate ./configure from configure.ac and Makefile.in from Makefile.am.
 # This also adds files like missing,depcomp,install-sh to the source
 # directory. To update these files at a later date use:
 #	autoreconf -f -i -v
 
+force=; warnings=
+while [ $# -gt 0 ]; do case $1 in
+  --force) force=$1; shift ;;
+  --warnings=?*) warnings="${warnings} $1"; shift ;;
+  *) echo "Usage: $0 [--force] [--warnings=CATEGORY ...]"; exit 1 ;;
+esac; done
 
 # Cygwin?
 test -x /usr/bin/uname && /usr/bin/uname | grep -i CYGWIN >/dev/null &&
@@ -17,75 +23,47 @@ test -x /usr/bin/uname && /usr/bin/uname | grep -i CYGWIN >/dev/null &&
     rm -f dostest.tmp
 }
 
-typep()
-{
-    cmd=$1 ; TMP=$IFS ; IFS=: ; set $PATH
-    for dir
-    do
-	if [ -x "$dir/$cmd" ]; then
-	    echo "$dir/$cmd"
-	    IFS=$TMP
-	    return 0
-        fi
-    done
-    IFS=$TMP
-    return 1
-}
+# Find automake
+if [ -n "$AUTOMAKE" ]; then
+  ver=$("$AUTOMAKE" --version) || exit 1
+else
+  maxver=
+  for v in 1.15 1.14 1.13 1.12 1.11 1.10; do
+    minver=$v; test -n "$maxver" || maxver=$v
+    ver=$(automake-$v --version 2>/dev/null) || continue
+    AUTOMAKE="automake-$v"
+    break
+  done
+  if [ -z "$AUTOMAKE" ]; then
+    echo "GNU Automake $minver (up to $maxver) is required to bootstrap smartmontools from SVN."
+    exit 1;
+  fi
+fi
 
-test -x "$AUTOMAKE" || AUTOMAKE=`typep automake-1.12` ||
-    AUTOMAKE=`typep automake-1.11` || AUTOMAKE=`typep automake-1.10` ||
-    AUTOMAKE=`typep automake-1.9` || AUTOMAKE=`typep automake-1.8` ||
-    AUTOMAKE=`typep automake-1.7` || AUTOMAKE=`typep automake17` ||
-{
-echo
-echo "You must have at least GNU Automake 1.7 (up to 1.11) installed"
-echo "in order to bootstrap smartmontools from SVN. Download the"
-echo "appropriate package for your distribution, or the source tarball"
-echo "from ftp://ftp.gnu.org/gnu/automake/ ."
-echo
-echo "Also note that support for new Automake series (anything newer"
-echo "than 1.11) is only added after extensive tests. If you live in"
-echo "the bleeding edge, you should know what you're doing, mainly how"
-echo "to test it before the developers. Be patient."
-exit 1;
-}
+ver=$(echo "$ver" | sed -n '1s,^.*[^.0-9]\([12]\.[0-9][-.0-9pl]*\).*$,\1,p')
+if [ -z "$ver" ]; then
+  echo "$AUTOMAKE: Unable to determine automake version."
+  exit 1
+fi
 
-test -x "$ACLOCAL" || ACLOCAL="aclocal`echo "$AUTOMAKE" | sed 's/.*automake//'`" && ACLOCAL=`typep "$ACLOCAL"` ||
-{
-echo
-echo "autogen.sh found automake-1.X, but not the respective aclocal-1.X."
-echo "Your installation of GNU Automake is broken or incomplete."
-exit 2;
-}
+# Check aclocal
+if [ -z "$ACLOCAL" ]; then
+  ACLOCAL="aclocal$(echo "$AUTOMAKE" | sed -n 's,^.*automake\(-[.0-9]*\),\1,p')"
+fi
 
-# Detect Automake version
-case "$AUTOMAKE" in
-  *automake-1.7|*automake17)
-    ver=1.7 ;;
-  *automake-1.8)
-    ver=1.8 ;;
-  *)
-    ver="`$AUTOMAKE --version | sed -n '1s,^.*[^.0-9]\([12]\.[0-9][-.0-9pl]*\).*$,\1,p'`"
-    ver="${ver:-?.?.?}"
-esac
+"$ACLOCAL" --version >/dev/null || exit 1
 
-# Warn if Automake version was not tested or does not support filesystem
+# Warn if Automake version was not tested
+amwarnings=$warnings
 case "$ver" in
-  1.[78]|1.[78].*)
-    # Check for case sensitive filesystem
-    # (to avoid e.g. "DIST_COMMON = ... ChangeLog ..." in Makefile.in on Cygwin)
-    rm -f CASETEST.TMP
-    echo > casetest.tmp
-    test -f CASETEST.TMP &&
-    {
-      echo "Warning: GNU Automake version ${ver} does not properly handle case"
-      echo "insensitive filesystems. Some make targets may not work."
-    }
-    rm -f casetest.tmp
+  1.10|1.10.[123]|1.11|1.11.[1-6]|1.12.[2-6]|1.13.[34])
+    # OK
     ;;
 
-  1.9.[1-6]|1.10|1.10.[12]|1.11|1.11.[1-6]|1.12.[2-5])
-    # OK
+  1.14|1.14.1|1.15)
+    # TODO: Enable 'subdir-objects' in configure.ac
+    # For now, suppress 'subdir-objects' forward-incompatibility warning
+    test -n "$warnings" || amwarnings="--warnings=no-unsupported"
     ;;
 
   *)
@@ -93,21 +71,14 @@ case "$ver" in
     echo "Please report success/failure to the smartmontools-support mailing list."
 esac
 
-# Install pkg-config macros
-# (Don't use 'aclocal -I m4 --install' to keep support for automake < 1.10)
+# required for aclocal-1.10 --install
 test -d m4 || mkdir m4 || exit 1
-test -f m4/pkg.m4 || acdir=`${ACLOCAL} --print-ac-dir` &&
-  test -n "$acdir" && test -f "$acdir/pkg.m4" &&
-{
-  echo "$0: installing \`m4/pkg.m4' from \`$acdir/pkg.m4'"
-  cp "$acdir/pkg.m4" m4/pkg.m4
-}
-test -f m4/pkg.m4 ||
-  echo "Warning: cannot install m4/pkg.m4, 'make dist' and systemd detection will not work."
 
 set -e	# stops on error status
 
-${ACLOCAL} -I m4
-autoheader
-${AUTOMAKE} --add-missing --copy
-autoconf
+test -z "$warnings" || set -x
+
+${ACLOCAL} -I m4 --install $force $warnings
+autoheader $force $warnings
+${AUTOMAKE} --add-missing --copy ${force:+--force-missing} $amwarnings
+autoconf $force $warnings

@@ -1,10 +1,10 @@
 /*
  * utility.h
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
- * Copyright (C) 2002-11 Bruce Allen <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2008-12 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2002-11 Bruce Allen
+ * Copyright (C) 2008-16 Christian Franke
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,7 +25,7 @@
 #ifndef UTILITY_H_
 #define UTILITY_H_
 
-#define UTILITY_H_CVSID "$Id: utility.h 3719 2012-12-03 21:19:33Z chrfranke $"
+#define UTILITY_H_CVSID "$Id: utility.h 4309 2016-04-24 14:59:15Z chrfranke $"
 
 #include <time.h>
 #include <sys/types.h> // for regex.h (according to POSIX)
@@ -92,57 +92,12 @@ void pout(const char *fmt, ...)
 // replacement for perror() with redirected output.
 void syserror(const char *message);
 
-// Function for processing -r option in smartctl and smartd
-int split_report_arg(char *s, int *i);
-
 // Function for processing -t selective... option in smartctl
 int split_selective_arg(char *s, uint64_t *start, uint64_t *stop, int *mode);
-
-
-// Guess device type (ata or scsi) based on device name 
-// Guessing will now use Controller Type defines below
-
-// Moved to C++ interface
-//int guess_device_type(const char * dev_name);
-
-// Create and return the list of devices to probe automatically
-// if the DEVICESCAN option is in the smartd config file
-// Moved to C++ interface
-//int make_device_names (char ***devlist, const char* name);
 
 // Replacement for exit(status)
 // (exit is not compatible with C++ destructors)
 #define EXIT(status) { throw (int)(status); }
-
-
-#ifdef OLD_INTERFACE
-
-// replacement for calloc() that tracks memory usage
-void *Calloc(size_t nmemb, size_t size);
-
-// Utility function to free memory
-void *FreeNonZero1(void* address, int size, int whatline, const char* file);
-
-// Typesafe version of above
-template <class T>
-inline T * FreeNonZero(T * address, int size, int whatline, const char* file)
-  { return (T *)FreeNonZero1((void *)address, size, whatline, file); }
-
-// A custom version of strdup() that keeps track of how much memory is
-// being allocated. If mustexist is set, it also throws an error if we
-// try to duplicate a NULL string.
-char *CustomStrDup(const char *ptr, int mustexist, int whatline, const char* file);
-
-// To help with memory checking.  Use when it is known that address is
-// NOT null.
-void *CheckFree1(void *address, int whatline, const char* file);
-
-// Typesafe version of above
-template <class T>
-inline T * CheckFree(T * address, int whatline, const char* file)
-  { return (T *)CheckFree1((void *)address, whatline, file); }
-
-#endif // OLD_INTERFACE
 
 // Compile time check of byte ordering
 // (inline const function allows compiler to remove dead code)
@@ -155,30 +110,28 @@ inline bool isbigendian()
 #endif
 }
 
-// Runtime check of byte ordering, throws if different from isbigendian().
-void check_endianness();
+// Runtime check of ./configure result, throws on error.
+void check_config();
 
 // This value follows the peripheral device type value as defined in
 // SCSI Primary Commands, ANSI INCITS 301:1997.  It is also used in
 // the ATA standard for packet devices to define the device type.
 const char *packetdevicetype(int type);
 
-// Moved to C++ interface
-//int deviceopen(const char *pathname, char *type);
-
-//int deviceclose(int fd);
-
-// Optional functions of os_*.c
-#ifdef HAVE_GET_OS_VERSION_STR
-// Return build host and OS version as static string
-//const char * get_os_version_str(void);
-#endif
-
 // returns true if any of the n bytes are nonzero, else zero.
 bool nonempty(const void * data, int size);
 
 // needed to fix glibc bug
 void FixGlibcTimeZoneBug();
+
+// Copy not null terminated char array to null terminated string.
+// Replace non-ascii characters.  Remove leading and trailing blanks.
+const char * format_char_array(char * str, int strsize, const char * chr, int chrsize);
+
+// Version for fixed size buffers.
+template<size_t STRSIZE, size_t CHRSIZE>
+inline const char * format_char_array(char (& str)[STRSIZE], const char (& chr)[CHRSIZE])
+  { return format_char_array(str, (int)STRSIZE, chr, (int)CHRSIZE); }
 
 // Format integer with thousands separator
 const char * format_with_thousands_sep(char * str, int strsize, uint64_t val,
@@ -234,6 +187,8 @@ public:
 
   bool open(const char * name, const char * mode)
     {
+      if (m_file && m_owner)
+        fclose(m_file);
       m_file = fopen(name, mode);
       m_owner = true;
       return !!m_file;
@@ -241,6 +196,8 @@ public:
 
   void open(FILE * f, bool owner = false)
     {
+      if (m_file && m_owner)
+        fclose(m_file);
       m_file = f;
       m_owner = owner;
     }

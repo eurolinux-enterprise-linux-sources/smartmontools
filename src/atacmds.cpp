@@ -1,10 +1,10 @@
 /*
  * atacmds.cpp
  * 
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
- * Copyright (C) 2002-11 Bruce Allen <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2008-13 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2002-11 Bruce Allen
+ * Copyright (C) 2008-15 Christian Franke
  * Copyright (C) 1999-2000 Michael Cornwell <cornwell@acm.org>
  * Copyright (C) 2000 Andre Hedrick <andre@linux-ide.org>
  *
@@ -32,10 +32,11 @@
 #include "config.h"
 #include "int64.h"
 #include "atacmds.h"
+#include "knowndrives.h"  // get_default_attr_defs()
 #include "utility.h"
 #include "dev_ata_cmd_set.h" // for parsed_ata_device
 
-const char * atacmds_cpp_cvsid = "$Id: atacmds.cpp 3825 2013-07-06 21:38:25Z samm2 $"
+const char * atacmds_cpp_cvsid = "$Id: atacmds.cpp 4301 2016-04-16 20:48:29Z chrfranke $"
                                  ATACMDS_H_CVSID;
 
 // Print ATA debug messages?
@@ -134,7 +135,7 @@ const format_name_entry format_names[] = {
 const unsigned num_format_names = sizeof(format_names)/sizeof(format_names[0]);
 
 // Table to map old to new '-v' option arguments
-const char * map_old_vendor_opts[][2] = {
+const char * const map_old_vendor_opts[][2] = {
   {  "9,halfminutes"              , "9,halfmin2hour,Power_On_Half_Minutes"},
   {  "9,minutes"                  , "9,min2hour,Power_On_Minutes"},
   {  "9,seconds"                  , "9,sec2hour,Power_On_Seconds"},
@@ -170,21 +171,26 @@ bool parse_attribute_def(const char * opt, ata_vendor_attr_defs & defs,
   // Parse option
   int len = strlen(opt);
   int id = 0, n1 = -1, n2 = -1;
-  char fmtname[32+1], attrname[32+1];
+  char fmtname[32+1], attrname[32+1], hddssd[3+1];
+  attrname[0] = hddssd[0] = 0;
+
   if (opt[0] == 'N') {
-    // "N,format"
+    // "N,format[,name]"
     if (!(   sscanf(opt, "N,%32[^,]%n,%32[^,]%n", fmtname, &n1, attrname, &n2) >= 1
           && (n1 == len || n2 == len)))
       return false;
   }
   else {
-    // "id,format[+][,name]"
-    if (!(   sscanf(opt, "%d,%32[^,]%n,%32[^,]%n", &id, fmtname, &n1, attrname, &n2) >= 2
-          && 1 <= id && id <= 255 && (n1 == len || n2 == len)))
+    // "id,format[+][,name[,HDD|SSD]]"
+    int n3 = -1;
+    if (!(   sscanf(opt, "%d,%32[^,]%n,%32[^,]%n,%3[DHS]%n",
+                    &id, fmtname, &n1, attrname, &n2, hddssd, &n3) >= 2
+          && 1 <= id && id <= 255
+          && (    n1 == len || n2 == len
+                  // ",HDD|SSD" for DEFAULT settings only
+              || (n3 == len && priority == PRIOR_DEFAULT))))
       return false;
   }
-  if (n1 == len)
-    attrname[0] = 0;
 
   unsigned flags = 0;
   // For "-v 19[78],increasing" above
@@ -196,6 +202,10 @@ bool parse_attribute_def(const char * opt, ata_vendor_attr_defs & defs,
   // Split "format[:byteorder]"
   char byteorder[8+1] = "";
   if (strchr(fmtname, ':')) {
+    if (priority == PRIOR_DEFAULT)
+      // TODO: Allow Byteorder in DEFAULT entry
+      return false;
+    n1 = n2 = -1;
     if (!(   sscanf(fmtname, "%*[^:]%n:%8[012345rvwz]%n", &n1, byteorder, &n2) >= 1
           && n2 == (int)strlen(fmtname)))
       return false;
@@ -218,6 +228,16 @@ bool parse_attribute_def(const char * opt, ata_vendor_attr_defs & defs,
   // 64-bit formats use the normalized and worst value bytes.
   if (!*byteorder && (format == RAWFMT_RAW64 || format == RAWFMT_HEX64))
     flags |= (ATTRFLAG_NO_NORMVAL|ATTRFLAG_NO_WORSTVAL);
+
+  // ",HDD|SSD" suffix for DEFAULT settings
+  if (hddssd[0]) {
+    if (!strcmp(hddssd, "HDD"))
+      flags |= ATTRFLAG_HDD_ONLY;
+    else if (!strcmp(hddssd, "SSD"))
+      flags |= ATTRFLAG_SSD_ONLY;
+    else
+      return false;
+  }
 
   if (!id) {
     // "N,format" -> set format for all entries
@@ -598,8 +618,7 @@ int smartcommandhandler(ata_device * device, smart_command_set command, int sele
                  "probable SAT/USB truncation\n");
         }
         else if (!out.out_regs.is_set()) {
-          pout("SMART STATUS RETURN: incomplete response, ATA output registers missing\n");
-          device->set_err(ENOSYS);
+          device->set_err(ENOSYS, "Incomplete response, ATA output registers missing");
           retval = -1;
         }
         else {
@@ -608,7 +627,7 @@ int smartcommandhandler(ata_device * device, smart_command_set command, int sele
           pout("Please get assistance from %s\n", PACKAGE_HOMEPAGE);
           pout("Register values returned from SMART Status command are:\n");
           print_regs(" ", out.out_regs);
-          device->set_err(EIO);
+          device->set_err(ENOSYS, "Invalid ATA output register values");
           retval = -1;
         }
         break;
@@ -617,7 +636,7 @@ int smartcommandhandler(ata_device * device, smart_command_set command, int sele
 
   // If requested, invalidate serial number before any printing is done
   if ((command == IDENTIFY || command == PIDENTIFY) && !retval && dont_print_serial_number)
-    invalidate_serno((ata_identify_device *)data);
+    invalidate_serno( reinterpret_cast<ata_identify_device *>(data) );
 
   // If reporting is enabled, say what output was produced by the command
   if (ata_debugmode) {
@@ -778,9 +797,6 @@ int ataCheckPowerMode(ata_device * device) {
   if ((smartcommandhandler(device, CHECK_POWER_MODE, 0, (char *)&result)))
     return -1;
 
-  if (result!=0 && result!=0x80 && result!=0xff)
-    pout("ataCheckPowerMode(): ATA CHECK POWER MODE returned unknown Sector Count Register value %02x\n", result);
-
   return (int)result;
 }
 
@@ -831,9 +847,9 @@ int ata_read_identity(ata_device * device, ata_identify_device * buf, bool fix_s
     packet = true;
   }
 
-  unsigned i;
   if (fix_swapped_id) {
     // Swap ID strings
+    unsigned i;
     for (i = 0; i < sizeof(buf->serial_no)-1; i += 2)
       swap2((char *)(buf->serial_no+i));
     for (i = 0; i < sizeof(buf->fw_rev)-1; i += 2)
@@ -851,14 +867,12 @@ int ata_read_identity(ata_device * device, ata_identify_device * buf, bool fix_s
   // NetBSD kernel delivers IDENTIFY data in host byte order
   // TODO: Handle NetBSD case in os_netbsd.cpp
   if (isbigendian()){
-    
     // swap various capability words that are needed
+    unsigned i;
     for (i=0; i<33; i++)
       swap2((char *)(buf->words047_079+i));
-    
     for (i=80; i<=87; i++)
       swap2((char *)(rawshort+i));
-    
     for (i=0; i<168; i++)
       swap2((char *)(buf->words088_255+i));
   }
@@ -1274,9 +1288,9 @@ int ataWriteSelectiveSelfTestLog(ata_device * device, ata_selective_selftest_arg
             uint64_t spans = (num_sectors + oldsize-1) / oldsize;
             uint64_t newsize = (num_sectors + spans-1) / spans;
             uint64_t newstart = num_sectors - newsize, newend = num_sectors - 1;
-            pout("Span %d changed from %"PRIu64"-%"PRIu64" (%"PRIu64" sectors)\n",
+            pout("Span %d changed from %" PRIu64 "-%" PRIu64 " (%" PRIu64 " sectors)\n",
                  i, start, end, oldsize);
-            pout("                 to %"PRIu64"-%"PRIu64" (%"PRIu64" sectors) (%"PRIu64" spans)\n",
+            pout("                 to %" PRIu64 "-%" PRIu64 " (%" PRIu64 " sectors) (%" PRIu64 " spans)\n",
                  newstart, newend, newsize, spans);
             start = newstart; end = newend;
           }
@@ -1293,7 +1307,7 @@ int ataWriteSelectiveSelfTestLog(ata_device * device, ata_selective_selftest_arg
       end = num_sectors - 1;
     }
     if (!(start <= end && end < num_sectors)) {
-      pout("Invalid selective self-test span %d: %"PRIu64"-%"PRIu64" (%"PRIu64" sectors)\n",
+      pout("Invalid selective self-test span %d: %" PRIu64 "-%" PRIu64 " (%" PRIu64 " sectors)\n",
         i, start, end, num_sectors);
       return -1;
     }
@@ -1466,9 +1480,9 @@ static void fix_exterrlog_lba(ata_smart_exterrlog * log, unsigned nsectors)
 
 // Read Extended Comprehensive Error Log
 bool ataReadExtErrorLog(ata_device * device, ata_smart_exterrlog * log,
-                        unsigned nsectors, firmwarebug_defs firmwarebugs)
+                        unsigned page, unsigned nsectors, firmwarebug_defs firmwarebugs)
 {
-  if (!ataReadLogExt(device, 0x03, 0x00, 0, log, nsectors))
+  if (!ataReadLogExt(device, 0x03, 0x00, page, log, nsectors))
     return false;
 
   check_multi_sector_sum(log, nsectors, "SMART Extended Comprehensive Error Log Structure");
@@ -1476,11 +1490,12 @@ bool ataReadExtErrorLog(ata_device * device, ata_smart_exterrlog * log,
   if (isbigendian()) {
     swapx(&log->device_error_count);
     swapx(&log->error_log_index);
-
     for (unsigned i = 0; i < nsectors; i++) {
-      for (unsigned j = 0; j < 4; j++)
-        swapx(&log->error_logs[i].commands[j].timestamp);
-      swapx(&log->error_logs[i].error.timestamp);
+      for (unsigned j = 0; j < 4; j++) {
+        for (unsigned k = 0; k < 5; k++)
+           swapx(&log[i].error_logs[j].commands[k].timestamp);
+        swapx(&log[i].error_logs[j].error.timestamp);
+      }
     }
   }
 
@@ -1648,7 +1663,7 @@ int ataSmartTest(ata_device * device, int testtype, bool force,
     int i;
     pout("SPAN         STARTING_LBA           ENDING_LBA\n");
     for (i = 0; i < selargs_io.num_spans; i++)
-      pout("   %d %20"PRId64" %20"PRId64"\n", i,
+      pout("   %d %20" PRId64 " %20" PRId64 "\n", i,
            selargs_io.span[i].start,
            selargs_io.span[i].end);
   }
@@ -1858,34 +1873,12 @@ ata_attr_state ata_get_attr_state(const ata_smart_attribute & attr,
   return ATTRSTATE_OK;
 }
 
-// Get default raw value print format
-static ata_attr_raw_format get_default_raw_format(unsigned char id)
-{
-  switch (id) {
-  case 3:   // Spin-up time
-    return RAWFMT_RAW16_OPT_AVG16;
-
-  case 5:   // Reallocated sector count
-  case 196: // Reallocated event count
-    return RAWFMT_RAW16_OPT_RAW16;
-
-  case 9:  // Power on hours
-    return RAWFMT_RAW24_OPT_RAW8;
-
-  case 190: // Temperature
-  case 194:
-    return RAWFMT_TEMPMINMAX;
-
-  default:
-    return RAWFMT_RAW48;
-  }
-}
-
 // Get attribute raw value.
 uint64_t ata_get_attr_raw_value(const ata_smart_attribute & attr,
                                 const ata_vendor_attr_defs & defs)
 {
   const ata_vendor_attr_defs::entry & def = defs[attr.id];
+  // TODO: Allow Byteorder in DEFAULT entry
 
   // Use default byteorder if not specified
   const char * byteorder = def.byteorder;
@@ -1926,6 +1919,33 @@ uint64_t ata_get_attr_raw_value(const ata_smart_attribute & attr,
   return rawvalue;
 }
 
+// Helper functions for RAWFMT_TEMPMINMAX
+static inline int check_temp_word(unsigned word)
+{
+  if (word <= 0x7f)
+    return 0x11; // >= 0, signed byte or word
+  if (word <= 0xff)
+    return 0x01; // < 0, signed byte
+  if (0xff80 <= word)
+    return 0x10; // < 0, signed word
+  return 0x00;
+}
+
+static bool check_temp_range(int t, unsigned char ut1, unsigned char ut2,
+                             int & lo, int & hi)
+{
+  int t1 = (signed char)ut1, t2 = (signed char)ut2;
+  if (t1 > t2) {
+    int tx = t1; t1 = t2; t2 = tx;
+  }
+
+  if (   -60 <= t1 && t1 <= t && t <= t2 && t2 <= 120
+      && !(t1 == -1 && t2 <= 0)                      ) {
+    lo = t1; hi = t2;
+    return true;
+  }
+  return false;
+}
 
 // Format attribute raw value.
 std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
@@ -1949,8 +1969,13 @@ std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
 
   // Get print format
   ata_attr_raw_format format = defs[attr.id].raw_format;
-  if (format == RAWFMT_DEFAULT)
-    format = get_default_raw_format(attr.id);
+  if (format == RAWFMT_DEFAULT) {
+     // Get format from DEFAULT entry
+     format = get_default_attr_defs()[attr.id].raw_format;
+     if (format == RAWFMT_DEFAULT)
+       // Unknown Attribute
+       format = RAWFMT_RAW48;
+  }
 
   // Print
   std::string s;
@@ -1967,19 +1992,19 @@ std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
   case RAWFMT_RAW48:
   case RAWFMT_RAW56:
   case RAWFMT_RAW64:
-    s = strprintf("%"PRIu64, rawvalue);
+    s = strprintf("%" PRIu64, rawvalue);
     break;
 
   case RAWFMT_HEX48:
-    s = strprintf("0x%012"PRIx64, rawvalue);
+    s = strprintf("0x%012" PRIx64, rawvalue);
     break;
 
   case RAWFMT_HEX56:
-    s = strprintf("0x%014"PRIx64, rawvalue);
+    s = strprintf("0x%014" PRIx64, rawvalue);
     break;
 
   case RAWFMT_HEX64:
-    s = strprintf("0x%016"PRIx64, rawvalue);
+    s = strprintf("0x%016" PRIx64, rawvalue);
     break;
 
   case RAWFMT_RAW16_OPT_RAW16:
@@ -2016,7 +2041,7 @@ std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
       int64_t temp = word[0]+(word[1]<<16);
       int64_t tmp1 = temp/60;
       int64_t tmp2 = temp%60;
-      s = strprintf("%"PRIu64"h+%02"PRIu64"m", tmp1, tmp2);
+      s = strprintf("%" PRIu64 "h+%02" PRIu64 "m", tmp1, tmp2);
       if (word[2])
         s += strprintf(" (%u)", word[2]);
     }
@@ -2028,7 +2053,7 @@ std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
       int64_t hours = rawvalue/3600;
       int64_t minutes = (rawvalue-3600*hours)/60;
       int64_t seconds = rawvalue%60;
-      s = strprintf("%"PRIu64"h+%02"PRIu64"m+%02"PRIu64"s", hours, minutes, seconds);
+      s = strprintf("%" PRIu64 "h+%02" PRIu64 "m+%02" PRIu64 "s", hours, minutes, seconds);
     }
     break;
 
@@ -2037,7 +2062,7 @@ std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
       // 30-second counter
       int64_t hours = rawvalue/120;
       int64_t minutes = (rawvalue-120*hours)/2;
-      s += strprintf("%"PRIu64"h+%02"PRIu64"m", hours, minutes);
+      s += strprintf("%" PRIu64 "h+%02" PRIu64 "m", hours, minutes);
     }
     break;
 
@@ -2056,34 +2081,63 @@ std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
     // Temperature
     {
       // Search for possible min/max values
-      // 00 HH 00 LL 00 TT (Hitachi/IBM)
-      // 00 00 HH LL 00 TT (Maxtor, Samsung)
+      // [5][4][3][2][1][0] raw[]
+      // [ 2 ] [ 1 ] [ 0 ]  word[]
+      // xx HH xx LL xx TT (Hitachi/HGST)
+      // xx LL xx HH xx TT (Kingston SSDs)
+      // 00 00 HH LL xx TT (Maxtor, Samsung, Seagate, Toshiba)
       // 00 00 00 HH LL TT (WDC)
-      unsigned char lo = 0, hi = 0;
-      int cnt = 0;
-      for (int i = 1; i < 6; i++) {
-        if (raw[i])
-          switch (cnt++) {
-            case 0:
-              lo = raw[i];
-              break;
-            case 1:
-              if (raw[i] < lo) {
-                hi = lo; lo = raw[i];
-              }
-              else
-                hi = raw[i];
-              break;
-          }
-      }
+      // CC CC HH LL xx TT (WDC, CCCC=over temperature count)
+      // (xx = 00/ff, possibly sign extension of lower byte)
 
-      unsigned char t = raw[0];
-      if (cnt == 0)
-        s = strprintf("%d", t);
-      else if (cnt == 2 && 0 < lo && lo <= t && t <= hi && hi < 128)
-        s = strprintf("%d (Min/Max %d/%d)", t, lo, hi);
+      int t = (signed char)raw[0];
+      int lo = 0, hi = 0;
+
+      int tformat;
+      int ctw0 = check_temp_word(word[0]);
+      if (!word[2]) {
+        if (!word[1] && ctw0)
+          // 00 00 00 00 xx TT
+          tformat = 0;
+        else if (ctw0 && check_temp_range(t, raw[2], raw[3], lo, hi))
+          // 00 00 HL LH xx TT
+          tformat = 1;
+        else if (!raw[3] && check_temp_range(t, raw[1], raw[2], lo, hi))
+          // 00 00 00 HL LH TT
+          tformat = 2;
+        else
+          tformat = -1;
+      }
+      else if (ctw0) {
+        if (   (ctw0 & check_temp_word(word[1]) & check_temp_word(word[2])) != 0x00
+            && check_temp_range(t, raw[2], raw[4], lo, hi)                         )
+          // xx HL xx LH xx TT
+          tformat = 3;
+        else if (   word[2] < 0x7fff
+                 && check_temp_range(t, raw[2], raw[3], lo, hi)
+                 && hi >= 40                                   )
+          // CC CC HL LH xx TT
+          tformat = 4;
+        else
+          tformat = -2;
+      }
       else
-        s = strprintf("%d (%d %d %d %d %d)", t, raw[5], raw[4], raw[3], raw[2], raw[1]);
+        tformat = -3;
+
+      switch (tformat) {
+        case 0:
+          s = strprintf("%d", t);
+          break;
+        case 1: case 2: case 3:
+          s = strprintf("%d (Min/Max %d/%d)", t, lo, hi);
+          break;
+        case 4:
+          s = strprintf("%d (Min/Max %d/%d #%d)", t, lo, hi, word[2]);
+          break;
+        default:
+          s = strprintf("%d (%d %d %d %d %d)", raw[0], raw[5], raw[4], raw[3], raw[2], raw[1]);
+          break;
+      }
     }
     break;
 
@@ -2100,212 +2154,23 @@ std::string ata_format_attr_raw_value(const ata_smart_attribute & attr,
   return s;
 }
 
-// Attribute names shouldn't be longer than 23 chars, otherwise they break the
-// output of smartctl.
-static const char * get_default_attr_name(unsigned char id, int rpm)
-{
-  bool hdd = (rpm > 1), ssd = (rpm == 1);
-
-  static const char Unknown_HDD_Attribute[] = "Unknown_HDD_Attribute";
-  static const char Unknown_SSD_Attribute[] = "Unknown_SSD_Attribute";
-
-  switch (id) {
-  case 1:
-    return "Raw_Read_Error_Rate";
-  case 2:
-    return "Throughput_Performance";
-  case 3:
-    return "Spin_Up_Time";
-  case 4:
-    return "Start_Stop_Count";
-  case 5:
-    return "Reallocated_Sector_Ct";
-  case 6:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Read_Channel_Margin";
-  case 7:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Seek_Error_Rate";
-  case 8:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Seek_Time_Performance";
-  case 9:
-    return "Power_On_Hours";
-  case 10:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Spin_Retry_Count";
-  case 11:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Calibration_Retry_Count";
-  case 12:
-    return "Power_Cycle_Count";
-  case 13:
-    return "Read_Soft_Error_Rate";
-  case 175:
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Program_Fail_Count_Chip";
-  case 176:
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Erase_Fail_Count_Chip";
-  case 177:
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Wear_Leveling_Count";
-  case 178:
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Used_Rsvd_Blk_Cnt_Chip";
-  case 179:
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Used_Rsvd_Blk_Cnt_Tot";
-  case 180:
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Unused_Rsvd_Blk_Cnt_Tot";
-  case 181:
-    return "Program_Fail_Cnt_Total";
-  case 182:
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Erase_Fail_Count_Total";
-  case 183:
-    return "Runtime_Bad_Block";
-  case 184:
-    return "End-to-End_Error";
-  case 187:
-    return "Reported_Uncorrect";
-  case 188:
-    return "Command_Timeout";
-  case 189:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "High_Fly_Writes";
-  case 190:
-    // Western Digital uses this for temperature.
-    // It's identical to Attribute 194 except that it
-    // has a failure threshold set to correspond to the
-    // max allowed operating temperature of the drive, which 
-    // is typically 55C.  So if this attribute has failed
-    // in the past, it indicates that the drive temp exceeded
-    // 55C sometime in the past.
-    return "Airflow_Temperature_Cel";
-  case 191:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "G-Sense_Error_Rate";
-  case 192:
-    return "Power-Off_Retract_Count";
-  case 193:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Load_Cycle_Count";
-  case 194:
-    return "Temperature_Celsius";
-  case 195:
-    // Fujitsu: "ECC_On_The_Fly_Count";
-    return "Hardware_ECC_Recovered";
-  case 196:
-    return "Reallocated_Event_Count";
-  case 197:
-    return "Current_Pending_Sector";
-  case 198:
-    return "Offline_Uncorrectable";
-  case 199:
-    return "UDMA_CRC_Error_Count";
-  case 200:
-    if (ssd) return Unknown_SSD_Attribute;
-    // Western Digital
-    return "Multi_Zone_Error_Rate";
-  case 201:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Soft_Read_Error_Rate";
-  case 202:
-    if (ssd) return Unknown_SSD_Attribute;
-    // Fujitsu: "TA_Increase_Count"
-    return "Data_Address_Mark_Errs";
-  case 203:
-    // Fujitsu
-    return "Run_Out_Cancel";
-    // Maxtor: ECC Errors
-  case 204:
-    // Fujitsu: "Shock_Count_Write_Opern"
-    return "Soft_ECC_Correction";
-  case 205:
-    // Fujitsu: "Shock_Rate_Write_Opern"
-    return "Thermal_Asperity_Rate";
-  case 206:
-    // Fujitsu
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Flying_Height";
-  case 207:
-    // Maxtor
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Spin_High_Current";
-  case 208:
-    // Maxtor
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Spin_Buzz";
-  case 209:
-    // Maxtor
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Offline_Seek_Performnce";
-  case 220:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Disk_Shift";
-  case 221:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "G-Sense_Error_Rate";
-  case 222:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Loaded_Hours";
-  case 223:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Load_Retry_Count";
-  case 224:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Load_Friction";
-  case 225:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Load_Cycle_Count";
-  case 226:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Load-in_Time";
-  case 227:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Torq-amp_Count";
-  case 228:
-    return "Power-off_Retract_Count";
-  case 230:
-    // seen in IBM DTPA-353750
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Head_Amplitude";
-  case 231:
-    return "Temperature_Celsius";
-  case 232:
-    // seen in Intel X25-E SSD
-    return "Available_Reservd_Space";
-  case 233:
-    // seen in Intel X25-E SSD
-    if (hdd) return Unknown_HDD_Attribute;
-    return "Media_Wearout_Indicator";
-  case 240:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Head_Flying_Hours";
-  case 241:
-    return "Total_LBAs_Written";
-  case 242:
-    return "Total_LBAs_Read";
-  case 250:
-    return "Read_Error_Retry_Rate";
-  case 254:
-    if (ssd) return Unknown_SSD_Attribute;
-    return "Free_Fall_Sensor";
-  default:
-    return "Unknown_Attribute";
-  }
-}
-
 // Get attribute name
 std::string ata_get_smart_attr_name(unsigned char id, const ata_vendor_attr_defs & defs,
                                     int rpm /* = 0 */)
 {
   if (!defs[id].name.empty())
     return defs[id].name;
-  else
-    return get_default_attr_name(id, rpm);
+  else {
+     const ata_vendor_attr_defs::entry & def = get_default_attr_defs()[id];
+     if (def.name.empty())
+       return "Unknown_Attribute";
+     else if ((def.flags & ATTRFLAG_HDD_ONLY) && rpm == 1)
+       return "Unknown_SSD_Attribute";
+     else if ((def.flags & ATTRFLAG_SSD_ONLY) && rpm > 1)
+       return "Unknown_HDD_Attribute";
+     else
+       return def.name;
+  }
 }
 
 // Find attribute index for attribute id, -1 if not found.
@@ -2370,6 +2235,7 @@ int ataReadSCTStatus(ata_device * device, ata_sct_status_response * sts)
     swapx(&sts->function_code);
     swapx(&sts->over_limit_count);
     swapx(&sts->under_limit_count);
+    swapx(&sts->smart_status);
   }
 
   // Check format version
@@ -2380,13 +2246,11 @@ int ataReadSCTStatus(ata_device * device, ata_sct_status_response * sts)
   return 0;
 }
 
-// Read SCT Temperature History Table and Status
+// Read SCT Temperature History Table
 int ataReadSCTTempHist(ata_device * device, ata_sct_temperature_history_table * tmh,
                        ata_sct_status_response * sts)
 {
-  // Check initial status
-  if (ataReadSCTStatus(device, sts))
-    return -1;
+  // Initial SCT status must be provided by caller
 
   // Do nothing if other SCT command is executing
   if (sts->ext_status_code == 0xffff) {
@@ -2491,7 +2355,7 @@ int ataGetSetSCTWriteCacheReordering(ata_device * device, bool enable, bool pers
 
   ata_cmd_out out;
   if (!device->ata_pass_through(in, out)) {
-    pout("Write SCT (%cet) XXX Error Recovery Control Command failed: %s\n",
+    pout("Write SCT (%cet) Feature Control Command failed: %s\n",
       (!set ? 'G' : 'S'), device->get_errmsg());
     return -1;
   }
@@ -2729,7 +2593,7 @@ int ataPrintSmartSelfTestEntry(unsigned testnum, unsigned char test_type,
 
   char msglba[32];
   if (retval < 0 && failing_lba < 0xffffffffffffULL)
-    snprintf(msglba, sizeof(msglba), "%"PRIu64, failing_lba);
+    snprintf(msglba, sizeof(msglba), "%" PRIu64, failing_lba);
   else {
     msglba[0] = '-'; msglba[1] = 0;
   }
@@ -2753,7 +2617,7 @@ int ataPrintSmartSelfTestlog(const ata_smart_selftestlog * data, bool allentries
     pout("Warning: ATA Specification requires self-test log structure revision number = 1\n");
   if (data->mostrecenttest==0){
     if (allentries)
-      pout("No self-tests have been logged.  [To run self-tests, use: smartctl -t]\n\n");
+      pout("No self-tests have been logged.  [To run self-tests, use: smartctl -t]\n");
     return 0;
   }
 

@@ -1,13 +1,11 @@
 /*
  * scsicmds.h
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
- * Copyright (C) 2002-8 Bruce Allen <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2002-8 Bruce Allen
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
- *
- * Additional SCSI work:
- * Copyright (C) 2003-13 Douglas Gilbert <dgilbert@interlog.com>
+ * Copyright (C) 2003-15 Douglas Gilbert <dgilbert@interlog.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,7 +30,7 @@
 #ifndef SCSICMDS_H_
 #define SCSICMDS_H_
 
-#define SCSICMDS_H_CVSID "$Id: scsicmds.h 3783 2013-03-02 01:51:12Z dpgilbert $\n"
+#define SCSICMDS_H_CVSID "$Id: scsicmds.h 4152 2015-10-17 16:08:21Z chrfranke $\n"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -322,7 +320,7 @@ class scsi_device;
 class supported_vpd_pages
 {
 public:
-    supported_vpd_pages(scsi_device * device);
+    explicit supported_vpd_pages(scsi_device * device);
     ~supported_vpd_pages() { num_valid = 0; }
 
     bool is_supported(int vpd_page_num) const;
@@ -385,9 +383,6 @@ int scsiRequestSense(scsi_device * device, struct scsi_sense_disect * sense_info
 
 int scsiSendDiagnostic(scsi_device * device, int functioncode, UINT8 *pBuf, int bufLen);
 
-int scsiReceiveDiagnostic(scsi_device * device, int pcv, int pagenum, UINT8 *pBuf,
-                      int bufLen);
-
 int scsiReadDefect10(scsi_device * device, int req_plist, int req_glist, int dl_format,
                      UINT8 *pBuf, int bufLen);
 
@@ -420,7 +415,8 @@ int scsiSelfTestInProgress(scsi_device * device, int * inProgress);
 int scsiFetchControlGLTSD(scsi_device * device, int modese_len, int current);
 int scsiSetControlGLTSD(scsi_device * device, int enabled, int modese_len);
 int scsiFetchTransportProtocol(scsi_device * device, int modese_len);
-int scsiGetRPM(scsi_device * device, int modese_len, int * form_factorp);
+int scsiGetRPM(scsi_device * device, int modese_len, int * form_factorp,
+               int * haw_zbcp);
 int scsiGetSetCache(scsi_device * device,  int modese_len, short int * wce,
                     short int * rcd);
 uint64_t scsiGetSize(scsi_device * device, unsigned int * lb_sizep,
@@ -431,8 +427,6 @@ int scsiGetProtPBInfo(scsi_device * device, unsigned char * rc16_12_31p);
 const char* scsiGetIEString(UINT8 asc, UINT8 ascq);
 int scsiGetTemp(scsi_device * device, UINT8 *currenttemp, UINT8 *triptemp);
 
-
-int scsiSmartIBMOfflineTest(scsi_device * device);
 
 int scsiSmartDefaultSelfTest(scsi_device * device);
 int scsiSmartShortSelfTest(scsi_device * device);

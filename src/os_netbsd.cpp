@@ -1,7 +1,7 @@
 /*
  * os_netbsd.cpp
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
  * Copyright (C) 2003-8 Sergey Svishchev <smartmontools-support@lists.sourceforge.net>
  *
@@ -26,14 +26,11 @@
 #include <errno.h>
 #include <unistd.h>
 
-const char * os_netbsd_cpp_cvsid = "$Id: os_netbsd.cpp 3806 2013-03-29 20:17:03Z chrfranke $"
+const char * os_netbsd_cpp_cvsid = "$Id: os_netbsd.cpp 4253 2016-03-26 19:47:47Z chrfranke $"
   OS_NETBSD_H_CVSID;
 
-/* global variable holding byte count of allocated memory */
-extern long long bytes;
-
 enum warnings {
-  BAD_SMART, NO_3WARE, NO_ARECA, MAX_MSG
+  BAD_SMART, MAX_MSG
 };
 
 /* Utility function for printing warnings */
@@ -128,12 +125,17 @@ get_dev_names(char ***names, const char *prefix)
       return -1;
     }
     sprintf(mp[n], "%s%s%c", net_dev_prefix, p, 'a' + getrawpartition());
-    bytes += strlen(mp[n]) + 1;
     n++;
   }
 
-  mp = (char **)realloc(mp, n * (sizeof(char *)));
-  bytes += (n) * (sizeof(char *));
+  void * tmp = (char **)realloc(mp, n * (sizeof(char *)));
+  if (NULL == tmp) {
+    pout("Out of memory constructing scan device list\n");
+    free(mp);
+    return -1;
+  }
+  else
+    mp = tmp;
   *names = mp;
   return n;
 }
@@ -320,7 +322,8 @@ ata_command_interface(int fd, smart_command_set command, int select, char *data)
     return 0;
   }
 
-  if ((retval = ioctl(fd, ATAIOCCOMMAND, &req))) {
+  retval = ioctl(fd, ATAIOCCOMMAND, &req);
+  if (retval < 0) {
     perror("Failed command");
     return -1;
   }

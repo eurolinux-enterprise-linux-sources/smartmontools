@@ -3,12 +3,12 @@ smartmontools - S.M.A.R.T. utility toolset for Darwin/Mac
 OSX, FreeBSD, Linux, NetBSD, OpenBSD, Solaris, and Windows.
 ==========================================================
 
-$Id: README 3817 2013-06-09 16:59:50Z chrfranke $
+$Id: README 4120 2015-08-27 16:12:21Z samm2 $
 
 == HOME ==
 The home for smartmontools is located at:
     
-    http://smartmontools.sourceforge.net/
+    http://www.smartmontools.org/
 
 Please see this web site for updates, documentation, and for submitting
 patches and bug reports.
@@ -19,7 +19,8 @@ You will find a mailing list for support and other questions at:
 
 
 == COPYING ==
-Copyright (C) 2002-9 Bruce Allen <smartmontools-support@lists.sourceforge.net>
+Copyright (C) 2002-9 Bruce Allen
+Copyright (C) 2004-15 Christian Franke
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the Free
@@ -27,30 +28,19 @@ Software Foundation; either version 2, or (at your option) any later
 version.
 
 You should have received a copy of the GNU General Public License (for
-example COPYING); if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+example COPYING).  If not, see <http://www.gnu.org/licenses/>.
 
 
 == CREDITS ==
-This code was originally developed as a Senior Thesis by Michael Cornwell
-at the Concurrent Systems Laboratory (now part of the Storage Systems
-Research Center), Jack Baskin School of Engineering, University of
-California, Santa Cruz. http://ssrc.soe.ucsc.edu/
+See AUTHORS file.
 
 
 == OVERVIEW ==
 smartmontools contains utilities that control and monitor storage
 devices using the Self-Monitoring, Analysis and Reporting Technology
-(S.M.A.R.T.) system build into ATA and SCSI Hard Drives. This is used
-to check the reliability of the hard drive and to predict drive
-failures.  smartmontools Version 5.x is designed to comply to the
-ATA/ATAPI-5 specification (Revision 1).  Future releases of
-smartmontools (Versions 6.x and 7.x) will comply with the ATA/ATAPI-6
-and ATA/ATAPI-7 specifications.
-
-This package is meant to be an up-to-date replacement for the
-ucsc-smartsuite and smartsuite packages, and is derived from that
-code.
+(SMART) system build into ATA/SATA and SCSI/SAS hard drives and
+solid-state drives.  This is used to check the reliability of the
+drive and to predict drive failures.
 
 
 == CONTENTS ==
@@ -89,17 +79,11 @@ http://sourceforge.net/p/smartmontools/code/HEAD/tree/tags/
 
 Refer to the "INSTALL" file for detailed installation instructions.
 
-See the "WARNINGS" file for reports of hardware where these utilities
-might cause serious problems such as lockups.
-
 == GETTING STARTED ==
 
 To examine SMART data from a disk, try:
-  smartctl -a /dev/hda
-for ATA disks, or
   smartctl -a /dev/sda
-for SCSI disks.  See the manual page 'man smartctl' for more
-information.
+See the manual page 'man smartctl' for more information.
 
 To start automatic monitoring of your disks with the smartd daemon,
 try:

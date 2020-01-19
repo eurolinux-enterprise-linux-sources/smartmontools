@@ -1,30 +1,27 @@
 #
-# $Id: configure.ac 3841 2013-07-26 17:38:57Z chrfranke $
+# $Id: configure.ac 4318 2016-05-07 11:18:20Z chrfranke $
 #
 dnl Process this file with autoconf to produce a configure script.
-AC_PREREQ(2.50)
-AC_INIT(smartmontools, 6.2, smartmontools-support@lists.sourceforge.net)
-AC_CONFIG_SRCDIR(smartctl.cpp)
+AC_PREREQ([2.60])
+AC_INIT(smartmontools, 6.5, smartmontools-support@lists.sourceforge.net)
+AM_INIT_AUTOMAKE([1.10 foreign])
 
-smartmontools_configure_date=`date -u +'%Y-%m-%d %T %Z'`
-smartmontools_cvs_tag=`echo '$Id: configure.ac 3841 2013-07-26 17:38:57Z chrfranke $'`
-smartmontools_release_date=2013-07-26
-smartmontools_release_time="17:38:20 UTC"
+smartmontools_cvs_tag=`echo '$Id: configure.ac 4318 2016-05-07 11:18:20Z chrfranke $'`
+smartmontools_release_date=2016-05-07
+smartmontools_release_time="11:17:46 UTC"
 
 AC_DEFINE_UNQUOTED(SMARTMONTOOLS_CONFIGURE_ARGS, "$ac_configure_args",            [smartmontools Configure Arguments])
-AC_DEFINE_UNQUOTED(SMARTMONTOOLS_CONFIGURE_DATE, "$smartmontools_configure_date", [smartmontools Configure Date])
 AC_DEFINE_UNQUOTED(SMARTMONTOOLS_RELEASE_DATE,   "$smartmontools_release_date",   [smartmontools Release Date])
 AC_DEFINE_UNQUOTED(SMARTMONTOOLS_RELEASE_TIME,   "$smartmontools_release_time",   [smartmontools Release Time])
 AC_DEFINE_UNQUOTED(CONFIG_H_CVSID,               "$smartmontools_cvs_tag",        [smartmontools CVS Tag])
-AC_DEFINE_UNQUOTED(PACKAGE_HOMEPAGE,             "http://smartmontools.sourceforge.net/", [smartmontools Home Page])
+AC_DEFINE_UNQUOTED(PACKAGE_HOMEPAGE,             "http://www.smartmontools.org/", [smartmontools Home Page])
 
-AM_CONFIG_HEADER(config.h)
-
-AM_INIT_AUTOMAKE([foreign])
+AC_CONFIG_SRCDIR([smartctl.cpp])
+AC_CONFIG_HEADER([config.h])
 
 AM_MAINTAINER_MODE
 
-AC_LANG_CPLUSPLUS
+AC_LANG([C++])
 dnl Checks for programs.
 AC_PROG_CXX
 AM_PROG_AS
@@ -43,15 +40,10 @@ AC_ARG_VAR(MAKENSIS, [NSIS compiler command])
 AC_CANONICAL_HOST
 case "${host}" in
   *-*-mingw*)
-    # Cygwin gcc 4.x does no longer support '-mno-cygwin' to select MinGW gcc.
-    if test "${build}" = "${host}" && test -x /usr/bin/uname && \
-    /usr/bin/uname | grep -i '^CYGWIN' >/dev/null; then
-      AC_MSG_ERROR([Build with MinGW on Cygwin requires cross-compilation, see INSTALL file.])
-    fi
     AC_CHECK_TOOL(WINDMC, [windmc])
     AC_CHECK_TOOL(WINDRES, [windres])
 
-    AC_MSG_CHECKING([checking for makensis])
+    AC_MSG_CHECKING([for makensis])
     if test -z "$MAKENSIS"; then
       if test -n "$PROGRAMFILES" && "$PROGRAMFILES/NSIS/makensis" -VERSION >/dev/null 2>&1; then
         MAKENSIS="$PROGRAMFILES/NSIS/makensis"
@@ -91,7 +83,6 @@ AC_MSG_RESULT([$is_svn_build])
 dnl Checks for header files.
 AC_CHECK_HEADERS([locale.h])
 AC_CHECK_HEADERS([dev/ata/atavar.h])
-AC_CHECK_HEADERS([netdb.h])
 dnl we need [u]int64_t and friends.
 AC_CHECK_HEADERS([inttypes.h])		dnl C99, UNIX98, solaris 2.6+
 AC_CHECK_HEADERS([stdint.h])		dnl C99
@@ -138,19 +129,6 @@ AC_CHECK_FUNCS([clock_gettime ftime gettimeofday])
 # Check byte ordering (defines WORDS_BIGENDIAN)
 AC_C_BIGENDIAN
 
-# Check whether snprintf appends null char and returns expected length on overflow
-AC_MSG_CHECKING([for working snprintf])
-AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]], [[ char buf[]="ABCDEFGHI";
-               int i=snprintf(buf,8,"12345678"); return !(!buf[7] && i==8); ]])],
-              [libc_have_working_snprintf=yes],
-              [libc_have_working_snprintf=no],
-              [libc_have_working_snprintf=unknown])
-AC_SUBST(libc_have_working_snprintf)
-if test "$libc_have_working_snprintf" = "yes"; then
-  AC_DEFINE(HAVE_WORKING_SNPRINTF, 1, [Define to 1 if the `snprintf' function is sane])
-fi
-AC_MSG_RESULT([$libc_have_working_snprintf])
-
 # check for __attribute__((packed))
 # (sizeof() check is required to avoid false positives if other
 # __attribute__((x)) are supported)
@@ -178,7 +156,7 @@ case "$with_systemdsystemunitdir" in
  auto|yes)
    if test -n "$PKG_CONFIG"; then
      AC_MSG_CHECKING([for systemdsystemunitdir])
-     systemdsystemunitdir=`$PKG_CONFIG --variable=systemdsystemunitdir systemd`
+     systemdsystemunitdir=`$PKG_CONFIG --variable=systemdsystemunitdir systemd 2>/dev/null`
      AC_MSG_RESULT([${systemdsystemunitdir:-no}])
    fi
    case "$with_systemdsystemunitdir:$sysconfdir:$systemdsystemunitdir" in
@@ -192,8 +170,32 @@ esac
 AC_SUBST(systemdsystemunitdir)
 AM_CONDITIONAL(INSTALL_SYSTEMDUNIT, [test -n "$systemdsystemunitdir"])
 
+AC_ARG_WITH(systemdenvfile,
+  [AS_HELP_STRING([--with-systemdenvfile@<:@=FILE|auto|yes|no@:>@], [Path of systemd EnvironmentFile [auto]])],
+  [], [with_systemdenvfile=auto])
+
+systemdenvfile=
+case "$with_systemdenvfile:$cross_compiling:$systemdsystemunitdir" in
+  auto:no:?*|yes:*:?*)
+    AC_MSG_CHECKING([for path of systemd EnvironmentFile])
+    for dir in sysconfig default; do
+      if test -d /etc/$dir; then
+        systemdenvfile='${sysconfdir}'/$dir/smartmontools
+        break
+      fi
+    done
+    AC_MSG_RESULT([${systemdenvfile:-no}])
+    case "$with_systemdenvfile:$systemdenvfile" in
+      yes:) AC_MSG_ERROR([Path of systemd EnvironmentFile not found]) ;;
+    esac ;;
+  auto:*|no:*) ;;
+  *:*:) AC_MSG_ERROR([Location of systemd service files not found]) ;;
+  *) systemdenvfile="$with_systemdenvfile"
+esac
+AC_SUBST(systemdenvfile)
+
 AC_ARG_WITH(initscriptdir,
-  [AC_HELP_STRING([--with-initscriptdir@<:@=DIR|auto|yes|no@:>@], [Location of init scripts [auto]])],
+  [AS_HELP_STRING([--with-initscriptdir@<:@=DIR|auto|yes|no@:>@], [Location of init scripts [auto]])],
   [], [with_initscriptdir=auto])
 
 initddir=
@@ -221,68 +223,76 @@ case "${host}" in
   *-*-freebsd*)
     initdfile="smartd.freebsd.initd"
     ;;
+  *-apple-darwin*)
+    initdfile="com.smartmontools.smartd.plist"
+    ;;
   *)
     initdfile="smartd.initd"
     ;;
 esac
 AC_SUBST(initdfile)
 
-AC_ARG_WITH(docdir,
-  [AC_HELP_STRING([--with-docdir=DIR],[Location of documentation [DATADIR/doc/smartmontools]])],
-  [docdir="$withval"],
-  [ if test -z "$docdir"; then
-      # autoconf 2.5x without '--docdir' support
-      docdir='${datadir}/doc/${PACKAGE}'
-    fi
-  ])
-AC_SUBST(docdir)
-
 AC_ARG_WITH(exampledir,
-  [AC_HELP_STRING([--with-exampledir=DIR],[Location of example scripts [DOCDIR/examplescripts]])],
+  [AS_HELP_STRING([--with-exampledir=DIR], [Location of example scripts [DOCDIR/examplescripts]])],
   [exampledir="$withval"], [exampledir='${docdir}/examplescripts'])
 AC_SUBST(exampledir)
 
-AC_ARG_ENABLE(drivedb,
-  [AC_HELP_STRING([--disable-drivedb],[Disables drive database file])],
-  [], [enable_drivedb=yes])
-
+drivedbdir='${datadir}/${PACKAGE}'
 AC_ARG_WITH(drivedbdir,
-  [AC_HELP_STRING([--with-drivedbdir=DIR],[Location of drive database file (implies --enable-drivedb) [DATADIR/smartmontools]])],
-  [drivedbdir="$withval"; enable_drivedb=yes],
-  [drivedbdir=; test "$enable_drivedb" = "yes" && drivedbdir='${datadir}/${PACKAGE}'])
+  [AS_HELP_STRING([--with-drivedbdir@<:@=DIR|yes|no@:>@], [Location of drive database file [DATADIR/smartmontools]])],
+  [case "$withval" in yes) ;; no) drivedbdir= ;; *) drivedbdir="$withval" ;; esac])
 AC_SUBST(drivedbdir)
-AM_CONDITIONAL(ENABLE_DRIVEDB, [test "$enable_drivedb" = "yes"])
+AM_CONDITIONAL(ENABLE_DRIVEDB, [test -n "$drivedbdir"])
 
-AC_ARG_ENABLE(savestates, [AC_HELP_STRING([--enable-savestates],[Enables default smartd state files])])
+AC_ARG_WITH(update-smart_drivedb,
+  [AS_HELP_STRING([--with-update-smart-drivedb@<:@=yes|no@:>@], [Install update-smart-drivedb script [yes]])],
+  [], [with_update_smart_drivedb=yes])
+test -n "$drivedbdir" || with_update_smart_drivedb=no
+AC_SUBST(with_update_smart_drivedb)
+AM_CONDITIONAL(ENABLE_UPDATE_SMART_DRIVEDB, [test "$with_update_smart_drivedb" = "yes"])
 
+AC_ARG_WITH(smartdscriptdir,
+  [AS_HELP_STRING([--with-smartdscriptdir=DIR], [Location of smartd_warning.sh script [SYSCONFDIR]])],
+  [smartdscriptdir="$withval"], [smartdscriptdir='${sysconfdir}'])
+AC_SUBST(smartdscriptdir)
+
+AC_ARG_WITH(smartdplugindir,
+  [AS_HELP_STRING([--with-smartdplugindir=@<:@DIR|no@:>@],
+    [Location of smartd_warning.sh plugin scripts [SMARTDSCRIPTDIR/smartd_warning.d]])],
+  [smartdplugindir=; test "$withval" != "no" && smartdplugindir="$withval"],
+  [smartdplugindir='${smartdscriptdir}/smartd_warning.d'])
+AC_SUBST(smartdplugindir)
+
+savestates=
 AC_ARG_WITH(savestates,
-  [AC_HELP_STRING([--with-savestates=PREFIX],[Prefix for default smartd state files (implies --enable-savestates) [LOCALSTATEDIR/lib/smartmontools/smartd.]])],
-  [savestates="$withval"; enable_savestates="yes"],
-  [savestates=; test "$enable_savestates" = "yes" && savestates='${localstatedir}/lib/${PACKAGE}/smartd.'])
+  [AS_HELP_STRING([--with-savestates@<:@=PREFIX|yes|no@:>@],
+    [Enable default smartd state files [no] (yes=LOCALSTATEDIR/lib/smartmontools/smartd.)])],
+  [case "$withval" in yes) savestates='${localstatedir}/lib/${PACKAGE}/smartd.' ;;
+                      no) ;; *) savestates="$withval" ;; esac])
 savestatesdir="${savestates%/*}"
 AC_SUBST(savestates)
 AC_SUBST(savestatesdir)
-AM_CONDITIONAL(ENABLE_SAVESTATES, [test "$enable_savestates" = "yes"])
+AM_CONDITIONAL(ENABLE_SAVESTATES, [test -n "$savestates"])
 
-AC_ARG_ENABLE(attributelog, [AC_HELP_STRING([--enable-attributelog],[Enables default smartd attribute log files])])
-
+attributelog=
 AC_ARG_WITH(attributelog,
-  [AC_HELP_STRING([--with-attributelog=PREFIX],[Prefix for default smartd attribute log files (implies --enable-attributelog) [LOCALSTATEDIR/lib/smartmontools/attrlog.]])],
-  [attributelog="$withval"; enable_attributelog="yes"],
-  [attributelog=; test "$enable_attributelog" = "yes" && attributelog='${localstatedir}/lib/${PACKAGE}/attrlog.'])
+  [AS_HELP_STRING([--with-attributelog@<:@=PREFIX|yes|no@:>@],
+    [Enable default smartd attribute log files [no] (yes=LOCALSTATEDIR/lib/smartmontools/attrlog.)])],
+  [case "$withval" in yes) attributelog='${localstatedir}/lib/${PACKAGE}/attrlog.' ;;
+                      no) ;; *) attributelog="$withval" ;; esac])
 attributelogdir="${attributelog%/*}"
 AC_SUBST(attributelog)
 AC_SUBST(attributelogdir)
-AM_CONDITIONAL(ENABLE_ATTRIBUTELOG, [test "$enable_attributelog" = "yes"])
+AM_CONDITIONAL(ENABLE_ATTRIBUTELOG, [test -n "$attributelog"])
 
 AC_ARG_ENABLE(sample,
-  [AC_HELP_STRING([--enable-sample],[Enables appending .sample to the installed smartd rc script and configuration file])],
+  [AS_HELP_STRING([--enable-sample], [Enables appending .sample to the installed smartd rc script and configuration file])],
   [smartd_suffix=; test "$enableval" = "yes" && smartd_suffix=".sample"],
   [smartd_suffix=;])
 AC_SUBST(smartd_suffix)
 
 AC_ARG_WITH(os-deps,
-  [AC_HELP_STRING([--with-os-deps='os_module.o ...'],[Specify OS dependent module(s) [guessed]])],
+  [AS_HELP_STRING([--with-os-deps='os_module.o ...'], [Specify OS dependent module(s) [guessed]])],
   [ for x in $with_os_deps; do
       case $x in
         *.o) ;;
@@ -292,7 +302,7 @@ AC_ARG_WITH(os-deps,
   ],[])
 
 AC_ARG_WITH(selinux,
-  [AC_HELP_STRING([--with-selinux@<:@=yes|no@:>@],[Enables SELinux support [no]])],
+  [AS_HELP_STRING([--with-selinux@<:@=yes|no@:>@], [Enables SELinux support [no]])],
   [ if test "$withval" = "yes"; then
       AC_CHECK_HEADERS([selinux/selinux.h], [], [AC_MSG_ERROR([Missing SELinux header files])])
       AC_CHECK_LIB(selinux, matchpathcon, [], [AC_MSG_ERROR([Missing or incorrect SELinux library files])])
@@ -304,13 +314,13 @@ if test "$with_selinux" = "yes"; then
 fi
 
 AC_ARG_WITH(libcap-ng,
-  [AC_HELP_STRING([--with-libcap-ng@<:@=auto|yes|no@:>@],[Add Libcap-ng support to smartd [auto]])],
+  [AS_HELP_STRING([--with-libcap-ng@<:@=auto|yes|no@:>@], [Add Libcap-ng support to smartd [auto]])],
   [], [with_libcap_ng=auto])
 
 use_libcap_ng=no
 if test "$with_libcap_ng" != "no"; then
   AC_CHECK_LIB(cap-ng, capng_clear,
-    [AC_DEFINE(HAVE_LIBCAP_NG, 1, [Define to 1 if you have the `cap-ng' library (-lcap-ng).])
+    [AC_DEFINE(HAVE_LIBCAP_NG, 1, [Define to 1 if you have the `cap-ng' library (-lcap-ng).]) dnl `vim syntax
      CAPNG_LDADD="-lcap-ng"; use_libcap_ng=yes])
 
   if test "$use_libcap_ng" = "yes"; then
@@ -322,15 +332,101 @@ fi
 
 AC_MSG_CHECKING([whether to use libcap-ng])
 AC_SUBST(CAPNG_LDADD)
-AM_CONDITIONAL(ENABLE_CAPABILITIES, [test "$use_libcap_ng" = "yes"])
 AC_MSG_RESULT([$use_libcap_ng])
 
-if test "$prefix" = "NONE"; then
-    dnl no prefix and no mandir, so use ${prefix}/share/man as default
-    if test "$mandir" = '${prefix}/man'; then
-    	AC_SUBST([mandir], ['${prefix}/share/man'])
-    fi
+# TODO: Remove when NVMe support is no longer EXPERIMENTAL
+AC_ARG_WITH(nvme-devicescan,
+  [AS_HELP_STRING([--with-nvme-devicescan@<:@=yes|no@:>@],
+    [Include NVMe devices in smartd DEVICESCAN [no]])])
+AC_SUBST(with_nvme_devicescan)
+if test "$with_nvme_devicescan" = "yes"; then
+  AC_DEFINE(WITH_NVME_DEVICESCAN, 1, [Define to 1 to include NVMe devices in smartd DEVICESCAN.])
 fi
+
+AC_ARG_WITH(solaris-sparc-ata,
+  [AS_HELP_STRING([--with-solaris-sparc-ata@<:@=yes|no@:>@],
+    [Enable legacy ATA support on Solaris SPARC (requires os_solaris_ata.s from SVN repository) [no]])])
+
+case "$host:$with_solaris_sparc_ata" in
+  sparc-*-solaris*:yes)
+    if test ! -f "$srcdir/os_solaris_ata.s"; then
+      AC_MSG_ERROR([Missing source file: $srcdir/os_solaris_ata.s
+This file is no longer included in the source tarball but still
+available in the SVN repository.])
+    fi
+    AC_DEFINE(WITH_SOLARIS_SPARC_ATA, 1, [Define to 1 to enable legacy ATA support on Solaris SPARC.])
+    ;;
+esac
+
+# Assume broken snprintf only on Windows with MSVCRT (MinGW without ANSI stdio support)
+libc_have_working_snprintf=yes
+
+case "$host" in
+  *-*-mingw*)
+    case " $CPPFLAGS $CXXFLAGS" in
+      *\ -[[DU]]__USE_MINGW_ANSI_STDIO*)
+        ;;
+      *)
+        # Older MinGW do not properly define PRI?64 if __USE_MINGW_ANSI_STDIO is set
+        # Newer MinGW set __USE_MINGW_ANSI_STDIO in first C++ include which may be too late
+        AC_MSG_CHECKING([whether __USE_MINGW_ANSI_STDIO is defined by C++ includes])
+        AC_PREPROC_IFELSE([AC_LANG_SOURCE([[
+          #undef __USE_MINGW_ANSI_STDIO
+          #include <iostream>
+          #ifndef __USE_MINGW_ANSI_STDIO
+            #error false
+          #endif]])],
+        [CXXFLAGS="-D__USE_MINGW_ANSI_STDIO $CXXFLAGS"],
+        [libc_have_working_snprintf=no])
+        AC_MSG_RESULT([$libc_have_working_snprintf])
+        ;;
+    esac ;;
+esac
+
+AC_ARG_WITH(working-snprintf,
+  [AS_HELP_STRING([--with-working-snprintf@<:@=yes|no@:>@],
+    [Function snprintf() handles output truncation as specified by C99 [MinGW:guessed,others:yes]])],
+  [libc_have_working_snprintf=$withval])
+
+if test "$libc_have_working_snprintf" = "yes"; then
+  AC_DEFINE(HAVE_WORKING_SNPRINTF, 1, [Define to 1 if the `snprintf' function is sane.]) dnl `vim syntax
+fi
+
+os_win32_manifest=
+case "$host" in
+  *-*-mingw*)
+    # Newer MinGW may add a default manifest
+    AC_MSG_CHECKING([whether $CC adds an application manifest])
+    cc_adds_manifest=no
+    AC_LINK_IFELSE([AC_LANG_PROGRAM()], [
+        if "$WINDRES" -O rc conftest.exe 2>/dev/null | grep '^1.*RT_MANIFEST' >/dev/null 2>&1; then
+          cc_adds_manifest=incomplete
+          # Manifest must provide a Win 10 compatibility ID
+          if "$WINDRES" -O rc conftest.exe 2>/dev/null | grep '{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}' >/dev/null 2>&1; then
+            cc_adds_manifest=yes
+          fi
+        fi],
+      [AC_MSG_ERROR([test compile failed])])
+    AC_MSG_RESULT([$cc_adds_manifest])
+    test "$cc_adds_manifest" = "yes" || os_win32_manifest='default.manifest.o'
+    ;;
+esac
+
+# TODO: Remove after smartmontools 6.5
+AC_ARG_WITH(docdir,
+  [AS_HELP_STRING([--with-docdir=DIR], [(removed, use --docdir=DIR instead)])],
+  [AC_MSG_ERROR([--with-docdir is no longer supported, use --docdir instead])])
+AC_ARG_ENABLE(drivedb,
+  [AS_HELP_STRING([--disable-drivedb], [(removed, use --without-drivedbdir instead)])])
+AC_ARG_ENABLE(savestates,
+  [AS_HELP_STRING([--enable-savestates], [(removed, use --with-savestates@<:@=yes@:>@ instead)])])
+AC_ARG_ENABLE(attributelog,
+  [AS_HELP_STRING([--enable-attributelog], [(removed, use --with-attributelog@<:@=yes@:>@ instead)])])
+if test -n "${enable_drivedb+set}${enable_savestates+set}${enable_attributelog+set}"; then
+  AC_MSG_ERROR([Options --disable-drivedb, --enable-savestates, --enable-attributelog are no longer supported.
+Use --without-drivedbdir, --with-savestates, --with-attributelog instead.])
+fi
+
 
 AC_SUBST(releaseversion,['${PACKAGE}-${VERSION}'])
 AC_SUBST(smartmontools_release_date)
@@ -338,7 +434,7 @@ AC_SUBST(smartmontools_release_time)
 
 # Set platform-specific modules and symbols
 os_libs=
-os_dltools='curl wget lynx'
+os_dltools='curl wget lynx svn'
 os_mailer=mail
 os_hostname="'hostname'"
 os_dnsdomainname=
@@ -359,12 +455,14 @@ case "${host}" in
   *-*-freebsd*|*-*-dragonfly*|*-*-kfreebsd*-gnu*)
     os_deps='os_freebsd.o cciss.o dev_areca.o'
     os_libs='-lcam'
-    os_dltools='curl wget lynx fetch'
+    os_dltools='curl wget lynx fetch svn'
     AC_CHECK_LIB(usb, libusb20_dev_get_device_desc)
     os_man_filter=FreeBSD
     ;;
   sparc-*-solaris*)
-    os_deps='os_solaris.o os_solaris_ata.o'
+    os_deps='os_solaris.o'
+    test "$with_solaris_sparc_ata" = "yes" \
+      && os_deps="$os_deps os_solaris_ata.o"
     os_mailer='mailx'
     os_solaris=yes
     os_man_filter=Solaris
@@ -383,11 +481,12 @@ case "${host}" in
   *-*-openbsd*)
     os_deps='os_openbsd.o'
     os_libs='-lutil'
-    os_dltools='curl wget lynx ftp'
+    os_dltools='curl wget lynx ftp svn'
     os_man_filter=OpenBSD
     ;;
   *-*-cygwin*)
     os_deps='os_win32.o dev_areca.o'
+    os_mailer='email'
     os_hostname="'hostname' 'echo "'"${HOSTNAME?unset}"'"'"
     os_dnsdomainname="'dnsdomainname' 'hostname -d' 'echo "'"${USERDNSDOMAIN?unset}"'"'"
     os_nisdomainname=
@@ -444,6 +543,7 @@ AC_SUBST([os_hostname])
 AC_SUBST([os_dnsdomainname])
 AC_SUBST([os_nisdomainname])
 AC_SUBST([os_man_filter])
+AC_SUBST([os_win32_manifest])
 
 # Create drivedb.h update branch name from version: 5.41[.X] -> RELEASE_5_41_DRIVEDB
 DRIVEDB_BRANCH=`echo $VERSION | sed 's,^\([[0-9]]*\.[[0-9]]*\)\..*$,\1,' \
@@ -502,75 +602,125 @@ AC_CONFIG_FILES(Makefile)
 AC_OUTPUT
 AC_PROG_MAKE_SET
 
-echo "-----------------------------------------------------------------------------" >&AS_MESSAGE_FD
-echo "${PACKAGE}-${VERSION} configuration:" >&AS_MESSAGE_FD
-echo "host operating system:  $host" >&AS_MESSAGE_FD
-echo "C++ compiler:           $CXX" >&AS_MESSAGE_FD
-echo "C compiler:             $CC" >&AS_MESSAGE_FD
-echo "preprocessor flags:     $CPPFLAGS" >&AS_MESSAGE_FD
-echo "C++ compiler flags:     $CXXFLAGS" >&AS_MESSAGE_FD
-echo "C compiler flags:       $CFLAGS" >&AS_MESSAGE_FD
-echo "linker flags:           $LDFLAGS" >&AS_MESSAGE_FD
-echo "OS specific modules:    $os_deps $os_libs $LIBS" >&AS_MESSAGE_FD
+# Note: Use `...` here as some shells do not properly parse '$(... case $x in X) ...)'
+info=`
+  echo "-----------------------------------------------------------------------------"
+  echo "${PACKAGE}-${VERSION} configuration:"
+  echo "host operating system:  $host"
+  echo "C++ compiler:           $CXX"
+  echo "C compiler:             $CC"
+  echo "preprocessor flags:     $CPPFLAGS"
+  echo "C++ compiler flags:     $CXXFLAGS"
+  echo "C compiler flags:       $CFLAGS"
+  echo "linker flags:           $LDFLAGS"
+  echo "OS specific modules:    $os_deps $os_libs $LIBS"
 
-case "$host_os" in
-  mingw*)
-    echo "resource compiler:      $WINDRES" >&AS_MESSAGE_FD
-    echo "message compiler:       $WINDMC" >&AS_MESSAGE_FD
-    echo "NSIS compiler:          $MAKENSIS" >&AS_MESSAGE_FD
-    if test -n "$drivedbdir"; then
-      echo "drive database file:    EXEDIR/drivedb.h" >&AS_MESSAGE_FD
-      if test -n "$MAKENSIS"; then
-        echo "database update tool:   EXEDIR/update-smart-drivedb.exe" >&AS_MESSAGE_FD
+  case "$host_os" in
+    mingw*)
+      echo "application manifest:   ${os_win32_manifest:-built-in}"
+      echo "resource compiler:      $WINDRES"
+      echo "message compiler:       $WINDMC"
+      echo "NSIS compiler:          $MAKENSIS"
+      if test -n "$drivedbdir"; then
+        echo "drive database file:    EXEDIR/drivedb.h"
+        if test -n "$MAKENSIS"; then
+          echo "database update tool:   EXEDIR/update-smart-drivedb.exe"
+        fi
+      else
+        echo "drive database file:    [[disabled]]"
       fi
-    else
-      echo "drive database file:    [[disabled]]" >&AS_MESSAGE_FD
-    fi
-    if test -n "$savestates"; then
-      echo "smartd save files:      `eval eval eval echo $savestates`MODEL-SERIAL.TYPE.state" >&AS_MESSAGE_FD
-    fi
-    if test -n "$attributelog"; then
-      echo "smartd attribute logs:  `eval eval eval echo $attributelog`MODEL-SERIAL.TYPE.csv" >&AS_MESSAGE_FD
-    fi
-    ;;
+      if test -n "$savestates"; then
+        echo "smartd save files:      \`eval eval eval echo $savestates\`MODEL-SERIAL.TYPE.state"
+      fi
+      if test -n "$attributelog"; then
+        echo "smartd attribute logs:  \`eval eval eval echo $attributelog\`MODEL-SERIAL.TYPE.csv"
+      fi
+      echo "NVMe DEVICESCAN:        ${with_nvme_devicescan-no}"
+      ;;
 
-  *)
-    echo "binary install path:    `eval eval eval echo $sbindir`" >&AS_MESSAGE_FD
-    echo "man page install path:  `eval eval eval echo $mandir`" >&AS_MESSAGE_FD
-    echo "doc file install path:  `eval eval eval echo $docdir`" >&AS_MESSAGE_FD
-    echo "examples install path:  `eval eval eval echo $exampledir`" >&AS_MESSAGE_FD
-    if test -n "$drivedbdir"; then
-      echo "drive database file:    `eval eval eval echo $drivedbdir`/drivedb.h" >&AS_MESSAGE_FD
-      echo "database update script: `eval eval eval echo $sbindir`/update-smart-drivedb" >&AS_MESSAGE_FD
-      echo "download tools:         `eval eval eval echo $os_dltools`" >&AS_MESSAGE_FD
-    else
-      echo "drive database file:    [[disabled]]" >&AS_MESSAGE_FD
-    fi
-    echo "local drive database:   `eval eval eval echo $sysconfdir`/smart_drivedb.h" >&AS_MESSAGE_FD
-    echo "smartd config file:     `eval eval eval echo $sysconfdir`/smartd.conf${smartd_suffix}" >&AS_MESSAGE_FD
-    echo "smartd warning script:  `eval eval eval echo $sysconfdir`/smartd_warning.sh" >&AS_MESSAGE_FD
-    if test -n "$initddir"; then
-      echo "smartd initd script:    `eval eval eval echo $initddir`/smartd${smartd_suffix}" >&AS_MESSAGE_FD
-    elif test -z "$systemdsystemunitdir"; then
-      echo "smartd initd script:    [[disabled]]" >&AS_MESSAGE_FD
-    fi
-    if test -n "$systemdsystemunitdir"; then
-      echo "smartd systemd file:    `eval eval eval echo $systemdsystemunitdir`/smartd.service" >&AS_MESSAGE_FD
-    fi
-    if test -n "$savestates"; then
-      echo "smartd save files:      `eval eval eval echo $savestates`MODEL-SERIAL.TYPE.state" >&AS_MESSAGE_FD
-    else
-      echo "smartd save files:      [[disabled]]" >&AS_MESSAGE_FD
-    fi
-    if test -n "$attributelog"; then
-      echo "smartd attribute logs:  `eval eval eval echo $attributelog`MODEL-SERIAL.TYPE.csv" >&AS_MESSAGE_FD
-    else
-      echo "smartd attribute logs:  [[disabled]]" >&AS_MESSAGE_FD
-    fi
-    echo "libcap-ng support:      $use_libcap_ng" >&AS_MESSAGE_FD
-    case "$host_os" in
-      linux*) echo "SELinux support:        ${with_selinux-no}" >&AS_MESSAGE_FD ;;
-    esac
+    *)
+      echo "binary install path:    \`eval eval eval echo $sbindir\`"
+      echo "man page install path:  \`eval eval eval echo $mandir\`"
+      echo "doc file install path:  \`eval eval eval echo $docdir\`"
+      echo "examples install path:  \`eval eval eval echo $exampledir\`"
+      if test -n "$drivedbdir"; then
+        echo "drive database file:    \`eval eval eval echo $drivedbdir\`/drivedb.h"
+        if test "$with_update_smart_drivedb" = "yes"; then
+          echo "database update script: \`eval eval eval echo $sbindir\`/update-smart-drivedb"
+          echo "download tools:         \`eval eval eval echo $os_dltools\`"
+        else
+          echo "database update script: [[disabled]]"
+        fi
+      else
+        echo "drive database file:    [[disabled]]"
+      fi
+      echo "local drive database:   \`eval eval eval echo $sysconfdir\`/smart_drivedb.h"
+      echo "smartd config file:     \`eval eval eval echo $sysconfdir\`/smartd.conf${smartd_suffix}"
+      echo "smartd warning script:  \`eval eval eval echo $smartdscriptdir\`/smartd_warning.sh"
+      if test -n "$smartdplugindir"; then
+        echo "smartd plugin path:     \`eval eval eval echo $smartdplugindir\`"
+      else
+        echo "smartd plugin path:     [[disabled]]"
+      fi
+      if test -n "$initddir"; then
+        echo "smartd initd script:    \`eval eval eval echo $initddir\`/${initdfile}"
+      elif test -z "$systemdsystemunitdir"; then
+        echo "smartd initd script:    [[disabled]]"
+      fi
+      if test -n "$systemdsystemunitdir"; then
+        echo "smartd systemd file:    \`eval eval eval echo $systemdsystemunitdir\`/smartd.service"
+        if test -n "$systemdenvfile"; then
+          echo "smartd environ file:    \`eval eval eval echo $systemdenvfile\`"
+        else
+          echo "smartd environ file:    [[disabled]]"
+        fi
+      fi
+      if test -n "$savestates"; then
+        echo "smartd save files:      \`eval eval eval echo $savestates\`MODEL-SERIAL.TYPE.state"
+      else
+        echo "smartd save files:      [[disabled]]"
+      fi
+      if test -n "$attributelog"; then
+        echo "smartd attribute logs:  \`eval eval eval echo $attributelog\`MODEL-SERIAL.TYPE.csv"
+      else
+        echo "smartd attribute logs:  [[disabled]]"
+      fi
+      echo "libcap-ng support:      $use_libcap_ng"
+      case "$host_os" in
+        linux*) echo "SELinux support:        ${with_selinux-no}" ;;
+      esac
+      case "$host_os" in
+        linux*|cygwin*) echo "NVMe DEVICESCAN:        ${with_nvme_devicescan-no}" ;;
+      esac
+      ;;
+  esac
+  echo "-----------------------------------------------------------------------------"
+`
+
+AC_MSG_NOTICE([
+$info
+])
+
+# TODO: Remove when NVMe support is no longer EXPERIMENTAL
+case "$host_os:${with_nvme_devicescan+set}" in
+  linux*:|cygwin*:|mingw*:)
+    AC_MSG_WARN([
+This version of smartmontools provides NVMe support which is still
+EXPERIMENTAL.  NVMe devices are not yet included in smartd.conf
+'DEVICESCAN' and 'smartctl --scan' unless '-d nvme' is specified.
+Use option '--with-nvme-devicescan' to include NVMe devices.
+Use option '--without-nvme-devicescan' to suppress this warning.])
     ;;
 esac
-echo "-----------------------------------------------------------------------------" >&AS_MESSAGE_FD
+
+# TODO: Remove after smartmontools 6.5
+case "$host:${with_solaris_sparc_ata+set}" in
+  sparc-*-solaris*:)
+    AC_MSG_WARN([
+Legacy ATA support is no longer enabled by default on Solaris SPARC.
+The required source file 'os_solaris_ata.s' is no longer included in
+the source tarball but still available in the SVN repository.
+Use option '--with-solaris-sparc-ata' to enable legacy ATA support.
+Use option '--without-solaris-sparc-ata' to suppress this warning.])
+    ;;
+esac

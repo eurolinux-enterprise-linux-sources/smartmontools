@@ -1,10 +1,10 @@
 /*
  * utility.cpp
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
- * Copyright (C) 2002-12 Bruce Allen <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2008-13 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2002-12 Bruce Allen
+ * Copyright (C) 2008-16 Christian Franke
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -52,7 +52,7 @@
 #include "atacmds.h"
 #include "dev_interface.h"
 
-const char * utility_cpp_cvsid = "$Id: utility.cpp 3838 2013-07-21 16:32:27Z chrfranke $"
+const char * utility_cpp_cvsid = "$Id: utility.cpp 4309 2016-04-24 14:59:15Z chrfranke $"
                                  UTILITY_H_CVSID INT64_H_CVSID;
 
 const char * packet_types[] = {
@@ -83,46 +83,54 @@ const char * packet_types[] = {
 std::string format_version_info(const char * prog_name, bool full /*= false*/)
 {
   std::string info = strprintf(
-    "%s "PACKAGE_VERSION" "
+    "%s " PACKAGE_VERSION " "
 #ifdef SMARTMONTOOLS_SVN_REV
-      SMARTMONTOOLS_SVN_DATE" r"SMARTMONTOOLS_SVN_REV
+      SMARTMONTOOLS_SVN_DATE " r" SMARTMONTOOLS_SVN_REV
 #else
-      "(build date "__DATE__")" // checkout without expansion of Id keywords
+      "(build date " __DATE__ ")" // checkout without expansion of Id keywords
 #endif
-      " [%s] "BUILD_INFO"\n"
-    "Copyright (C) 2002-13, Bruce Allen, Christian Franke, www.smartmontools.org\n",
+      " [%s] " BUILD_INFO "\n"
+    "Copyright (C) 2002-16, Bruce Allen, Christian Franke, www.smartmontools.org\n",
     prog_name, smi()->get_os_version_str().c_str()
   );
   if (!full)
     return info;
 
-  info += strprintf(
-    "\n"
-    "%s comes with ABSOLUTELY NO WARRANTY. This is free\n"
+  info += "\n";
+  info += prog_name;
+  info += " comes with ABSOLUTELY NO WARRANTY. This is free\n"
     "software, and you are welcome to redistribute it under\n"
     "the terms of the GNU General Public License; either\n"
     "version 2, or (at your option) any later version.\n"
     "See http://www.gnu.org for further details.\n"
-    "\n",
-    prog_name
-  );
-  info += strprintf(
-    "smartmontools release "PACKAGE_VERSION
-      " dated "SMARTMONTOOLS_RELEASE_DATE" at "SMARTMONTOOLS_RELEASE_TIME"\n"
+    "\n"
+    "smartmontools release " PACKAGE_VERSION
+      " dated " SMARTMONTOOLS_RELEASE_DATE " at " SMARTMONTOOLS_RELEASE_TIME "\n"
 #ifdef SMARTMONTOOLS_SVN_REV
-    "smartmontools SVN rev "SMARTMONTOOLS_SVN_REV
-      " dated "SMARTMONTOOLS_SVN_DATE" at "SMARTMONTOOLS_SVN_TIME"\n"
+    "smartmontools SVN rev " SMARTMONTOOLS_SVN_REV
+      " dated " SMARTMONTOOLS_SVN_DATE " at " SMARTMONTOOLS_SVN_TIME "\n"
 #else
     "smartmontools SVN rev is unknown\n"
 #endif
-    "smartmontools build host: "SMARTMONTOOLS_BUILD_HOST"\n"
-    "smartmontools build configured: "SMARTMONTOOLS_CONFIGURE_DATE "\n"
-    "%s compile dated "__DATE__" at "__TIME__"\n"
-    "smartmontools configure arguments: ",
-    prog_name
-  );
+    "smartmontools build host: " SMARTMONTOOLS_BUILD_HOST "\n"
+    "smartmontools build with: "
+#if   __cplusplus > 201402
+                               "C++17"
+#elif __cplusplus > 201103
+                               "C++14"
+#elif __cplusplus > 199711
+                               "C++11"
+#else
+                               "C++98"
+#endif
+#if defined(__GNUC__) && defined(__VERSION__) // works also with CLang
+                                     ", GCC " __VERSION__
+#endif
+                                                          "\n"
+    "smartmontools configure arguments:"
+  ;
   info += (sizeof(SMARTMONTOOLS_CONFIGURE_ARGS) > 1 ?
-           SMARTMONTOOLS_CONFIGURE_ARGS : "[no arguments given]");
+           SMARTMONTOOLS_CONFIGURE_ARGS : " [no arguments given]");
   info += '\n';
 
   return info;
@@ -265,7 +273,7 @@ const char *packetdevicetype(int type){
 }
 
 // Runtime check of byte ordering, throws if different from isbigendian().
-void check_endianness()
+static void check_endianness()
 {
   union {
     // Force compile error if int type is not 32bit.
@@ -291,9 +299,6 @@ void dateandtimezoneepoch(char *buffer, time_t tval){
   const char *timezonename;
   char datebuffer[DATEANDEPOCHLEN];
   int lenm1;
-#ifdef _WIN32
-  char tzfixbuf[6+1];
-#endif
 
   FixGlibcTimeZoneBug();
   
@@ -323,6 +328,8 @@ void dateandtimezoneepoch(char *buffer, time_t tval){
 
 #ifdef _WIN32
   // Fix long non-ascii timezone names
+    // cppcheck-suppress variableScope
+  char tzfixbuf[6+1] = "";
   if (!getenv("TZ"))
     timezonename=fixtzname(tzfixbuf, sizeof(tzfixbuf), timezonename);
 #endif
@@ -511,33 +518,6 @@ bool regular_expression::compile()
   return true;
 }
 
-// Splits an argument to the -r option into a name part and an (optional) 
-// positive integer part.  s is a pointer to a string containing the
-// argument.  After the call, s will point to the name part and *i the
-// integer part if there is one or 1 otherwise.  Note that the string s may
-// be changed by this function.  Returns zero if successful and non-zero
-// otherwise.
-int split_report_arg(char *s, int *i)
-{
-  if ((s = strchr(s, ','))) {
-    // Looks like there's a name part and an integer part.
-    char *tailptr;
-
-    *s++ = '\0';
-    if (*s == '0' || !isdigit((int)*s))  // The integer part must be positive
-      return 1;
-    errno = 0;
-    *i = (int) strtol(s, &tailptr, 10);
-    if (errno || *tailptr != '\0')
-      return 1;
-  } else {
-    // There's no integer part.
-    *i = 1;
-  }
-
-  return 0;
-}
-
 #ifndef HAVE_STRTOULL
 // Replacement for missing strtoull() (Linux with libc < 6, MSVC)
 // Functionality reduced to requirements of smartd and split_selective_arg().
@@ -644,73 +624,6 @@ int split_selective_arg(char *s, uint64_t *start,
   return 0;
 }
 
-#ifdef OLD_INTERFACE
-
-int64_t bytes = 0;
-
-// Helps debugging.  If the second argument is non-negative, then
-// decrement bytes by that amount.  Else decrement bytes by (one plus)
-// length of null terminated string.
-void *FreeNonZero1(void *address, int size, int line, const char* file){
-  if (address) {
-    if (size<0)
-      bytes-=1+strlen((char*)address);
-    else
-      bytes-=size;
-    return CheckFree1(address, line, file);
-  }
-  return NULL;
-}
-
-// To help with memory checking.  Use when it is known that address is
-// NOT null.
-void *CheckFree1(void *address, int /*whatline*/, const char* /*file*/){
-  if (address){
-    free(address);
-    return NULL;
-  }
-  throw std::runtime_error("Internal error in CheckFree()");
-}
-
-// A custom version of calloc() that tracks memory use
-void *Calloc(size_t nmemb, size_t size) { 
-  void *ptr=calloc(nmemb, size);
-  
-  if (ptr)
-    bytes+=nmemb*size;
-
-  return ptr;
-}
-
-// A custom version of strdup() that keeps track of how much memory is
-// being allocated. If mustexist is set, it also throws an error if we
-// try to duplicate a NULL string.
-char *CustomStrDup(const char *ptr, int mustexist, int /*whatline*/, const char* /*file*/){
-  char *tmp;
-
-  // report error if ptr is NULL and mustexist is set
-  if (ptr==NULL){
-    if (mustexist)
-      throw std::runtime_error("Internal error in CustomStrDup()");
-    else
-      return NULL;
-  }
-
-  // make a copy of the string...
-  tmp=strdup(ptr);
-  
-  if (!tmp)
-    throw std::bad_alloc();
-  
-  // and track memory usage
-  bytes+=1+strlen(ptr);
-  
-  return tmp;
-}
-
-#endif // OLD_INTERFACE
-
-
 // Returns true if region of memory contains non-zero entries
 bool nonempty(const void * data, int size)
 {
@@ -718,6 +631,31 @@ bool nonempty(const void * data, int size)
     if (((const unsigned char *)data)[i])
       return true;
   return false;
+}
+
+// Copy not null terminated char array to null terminated string.
+// Replace non-ascii characters.  Remove leading and trailing blanks.
+const char * format_char_array(char * str, int strsize, const char * chr, int chrsize)
+{
+  int b = 0;
+  while (b < chrsize && chr[b] == ' ')
+    b++;
+  int n = 0;
+  while (b+n < chrsize && chr[b+n])
+    n++;
+  while (n > 0 && chr[b+n-1] == ' ')
+    n--;
+
+  if (n >= strsize)
+    n = strsize-1;
+
+  for (int i = 0; i < n; i++) {
+    char c = chr[b+i];
+    str[i] = (' ' <= c && c <= '~' ? c : '?');
+  }
+
+  str[n] = 0;
+  return str;
 }
 
 // Format integer with thousands separator
@@ -735,7 +673,7 @@ const char * format_with_thousands_sep(char * str, int strsize, uint64_t val,
   }
 
   char num[64];
-  snprintf(num, sizeof(num), "%"PRIu64, val);
+  snprintf(num, sizeof(num), "%" PRIu64, val);
   int numlen = strlen(num);
 
   int i = 0, j = 0;
@@ -783,12 +721,12 @@ const char * format_capacity(char * str, int strsize, uint64_t val,
   if (i == 0)
     snprintf(str, strsize, "%u B", (unsigned)n);
   else if (n >= 100) // "123 xB"
-    snprintf(str, strsize, "%"PRIu64" %cB", n, prefixes[i]);
+    snprintf(str, strsize, "%" PRIu64 " %cB", n, prefixes[i]);
   else if (n >= 10)  // "12.3 xB"
-    snprintf(str, strsize, "%"PRIu64"%s%u %cB", n, decimal_point,
+    snprintf(str, strsize, "%" PRIu64 "%s%u %cB", n, decimal_point,
         (unsigned)(((val % d) * 10) / d), prefixes[i]);
   else               // "1.23 xB"
-    snprintf(str, strsize, "%"PRIu64"%s%02u %cB", n, decimal_point,
+    snprintf(str, strsize, "%" PRIu64 "%s%02u %cB", n, decimal_point,
         (unsigned)(((val % d) * 100) / d), prefixes[i]);
 
   return str;
@@ -814,8 +752,8 @@ std::string strprintf(const char * fmt, ...)
 
 
 #ifndef HAVE_WORKING_SNPRINTF
-// Some versions of (v)snprintf() don't append null char on overflow (MSVCRT.DLL),
-// and/or return -1 on overflow (old Linux).
+// Some versions of (v)snprintf() don't append null char (MSVCRT.DLL),
+// and/or return -1 on output truncation (glibc <= 2.0.6).
 // Below are sane replacements substituted by #define in utility.h.
 
 #undef vsnprintf
@@ -844,5 +782,25 @@ int safe_snprintf(char *buf, int size, const char *fmt, ...)
   return i;
 }
 
-#endif
+#else // HAVE_WORKING_SNPRINTF
 
+static void check_snprintf()
+{
+  char buf[] =              "ABCDEFGHI";
+  int n1 = snprintf(buf, 8, "123456789");
+  int n2 = snprintf(buf, 0, "X");
+  if (!(!strcmp(buf, "1234567") && n1 == 9 && n2 == 1))
+    throw std::logic_error("Function snprintf() does not conform to C99,\n"
+                           "please contact " PACKAGE_BUGREPORT);
+}
+
+#endif // HAVE_WORKING_SNPRINTF
+
+// Runtime check of ./configure result, throws on error.
+void check_config()
+{
+  check_endianness();
+#ifdef HAVE_WORKING_SNPRINTF
+  check_snprintf();
+#endif
+}

@@ -1,9 +1,9 @@
 /*
  * os_freebsd.c
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
- * Copyright (C) 2003-10 Eduard Martinescu <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2003-10 Eduard Martinescu
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -38,6 +38,8 @@
 
 #include "config.h"
 #include "int64.h"
+// set by /usr/include/sys/ata.h, suppress warning
+#undef ATA_READ_LOG_EXT
 #include "atacmds.h"
 #include "scsicmds.h"
 #include "cciss.h"
@@ -68,6 +70,9 @@
 #include <dev/usb/usbhid.h>
 #endif
 
+// based on "/sys/dev/nvme/nvme.h" from FreeBSD kernel sources
+#include "freebsd_nvme_ioctl.h" // NVME_PASSTHROUGH_CMD, nvme_completion_is_error
+
 #define CONTROLLER_3WARE_9000_CHAR      0x01
 #define CONTROLLER_3WARE_678K_CHAR      0x02
 
@@ -75,7 +80,7 @@
 #define PATHINQ_SETTINGS_SIZE   128
 #endif
 
-const char *os_XXXX_c_cvsid="$Id: os_freebsd.cpp 3824 2013-07-05 10:40:38Z samm2 $" \
+const char *os_XXXX_c_cvsid="$Id: os_freebsd.cpp 4257 2016-03-27 23:32:54Z samm2 $" \
 ATACMDS_H_CVSID CCISS_H_CVSID CONFIG_H_CVSID INT64_H_CVSID OS_FREEBSD_H_CVSID SCSICMDS_H_CVSID UTILITY_H_CVSID;
 
 #define NO_RETURN 0
@@ -86,19 +91,21 @@ ATACMDS_H_CVSID CCISS_H_CVSID CONFIG_H_CVSID INT64_H_CVSID OS_FREEBSD_H_CVSID SC
 
 // Utility function for printing warnings
 void printwarning(int msgNo, const char* extra) {
-  static int printed[] = {0,0,0,0};
-  static const char* message[]={
-    "The SMART RETURN STATUS return value (smartmontools -H option/Directive)\n can not be retrieved with this version of ATAng, please do not rely on this value\nYou should update to at least 5.2\n",
-
-    "Error SMART Status command failed\nPlease get assistance from \n" PACKAGE_HOMEPAGE "\nRegister values returned from SMART Status command are:\n",
-
-    "You must specify a DISK # for 3ware drives with -d 3ware,<n> where <n> begins with 1 for first disk drive\n",
-
-    "ATA support is not provided for this kernel version. Please ugrade to a recent 5-CURRENT kernel (post 09/01/2003 or so)\n"
-  };
 
   if (msgNo >= 0 && msgNo <= MAX_MSG) {
+    static int printed[] = {0,0,0,0};
     if (!printed[msgNo]) {
+
+      static const char* message[]={
+        "The SMART RETURN STATUS return value (smartmontools -H option/Directive)\n can not be retrieved with this version of ATAng, please do not rely on this value\nYou should update to at least 5.2\n",
+
+        "Error SMART Status command failed\nPlease get assistance from \n" PACKAGE_HOMEPAGE "\nRegister values returned from SMART Status command are:\n",
+
+        "You must specify a DISK # for 3ware drives with -d 3ware,<n> where <n> begins with 1 for first disk drive\n",
+
+        "ATA support is not provided for this kernel version. Please ugrade to a recent 5-CURRENT kernel (post 09/01/2003 or so)\n"
+      };
+
       printed[msgNo] = 1;
       pout("%s", message[msgNo]);
       if (extra)
@@ -120,8 +127,6 @@ void printwarning(int msgNo, const char* extra) {
 
 #define ARGUSED(x) ((void)(x))
 
-// global variable holding byte count of allocated memory
-long long bytes;
 extern unsigned char failuretest_permissive;
 
 /////////////////////////////////////////////////////////////////////////////
@@ -135,9 +140,9 @@ class freebsd_smart_device
 : virtual public /*implements*/ smart_device
 {
 public:
-  explicit freebsd_smart_device(const char * mode)
+  explicit freebsd_smart_device()
     : smart_device(never_called),
-      m_fd(-1), m_mode(mode) { }
+      m_fd(-1) { }
 
   virtual ~freebsd_smart_device() throw();
 
@@ -157,7 +162,6 @@ protected:
 
 private:
   int m_fd; ///< filedesc, -1 if not open.
-  const char * m_mode; ///< Mode string for deviceopen().
 };
 
 #ifdef __GLIBC__
@@ -249,7 +253,7 @@ protected:
 
 freebsd_ata_device::freebsd_ata_device(smart_interface * intf, const char * dev_name, const char * req_type)
 : smart_device(intf, dev_name, "ata", req_type),
-  freebsd_smart_device("ATA")
+  freebsd_smart_device()
 {
 }
 
@@ -445,7 +449,8 @@ int freebsd_atacam_device::do_cmd( struct ata_ioc_request* request, bool is_48bi
   }
 
   if ((ccb.ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
-    cam_error_print(m_camdev, &ccb, CAM_ESF_ALL, CAM_EPF_ALL, stderr);
+    if(scsi_debugmode > 0)
+      cam_error_print(m_camdev, &ccb, CAM_ESF_ALL, CAM_EPF_ALL, stderr);
     set_err(EIO);
     return -1;
   }
@@ -465,6 +470,112 @@ int freebsd_atacam_device::do_cmd( struct ata_ioc_request* request, bool is_48bi
 }
 
 #endif
+
+/////////////////////////////////////////////////////////////////////////////
+/// NVMe support
+
+class freebsd_nvme_device
+: public /*implements*/ nvme_device,
+  public /*extends*/ freebsd_smart_device
+{
+public:
+  freebsd_nvme_device(smart_interface * intf, const char * dev_name,
+    const char * req_type, unsigned nsid);
+
+  virtual bool open();
+
+  virtual bool nvme_pass_through(const nvme_cmd_in & in, nvme_cmd_out & out);
+};
+
+freebsd_nvme_device::freebsd_nvme_device(smart_interface * intf, const char * dev_name,
+  const char * req_type, unsigned nsid)
+: smart_device(intf, dev_name, "nvme", req_type),
+  nvme_device(nsid),
+  freebsd_smart_device()
+{
+}
+
+bool freebsd_nvme_device::open()
+{
+  const char *dev = get_dev_name();
+  if (!strnstr(dev, NVME_CTRLR_PREFIX, strlen(NVME_CTRLR_PREFIX))) {
+  	set_err(EINVAL, "NVMe controller controller/namespace ids must begin with '%s'", 
+  		NVME_CTRLR_PREFIX);
+  	return false;
+  }
+  
+  int nsid = -1, ctrlid = -1;
+  char tmp;
+  
+  if(sscanf(dev, NVME_CTRLR_PREFIX"%d%c", &ctrlid, &tmp) == 1)
+  {
+  	if(ctrlid < 0) {
+  		set_err(EINVAL, "Invalid NVMe controller number");
+  		return false;
+  	}
+  	nsid = 0xFFFFFFFF; // broadcast id
+  }
+  else if (sscanf(dev, NVME_CTRLR_PREFIX"%d"NVME_NS_PREFIX"%d%c", 
+  	&ctrlid, &nsid, &tmp) == 2) 
+  {
+  	if(ctrlid < 0 || nsid < 0) {
+  		set_err(EINVAL, "Invalid NVMe controller/namespace number");
+  		return false;
+  	}
+  }
+  else {
+  	set_err(EINVAL, "Invalid NVMe controller/namespace syntax");
+  	return false;
+  }
+  
+  // we should always open controller, not namespace device
+  char	full_path[64];
+  snprintf(full_path, sizeof(full_path), NVME_CTRLR_PREFIX"%d", ctrlid);
+  
+  int fd; 
+  if ((fd = ::open(full_path, O_RDWR))<0) {
+    set_err(errno);
+    return false;
+  }
+  set_fd(fd);
+  
+  if (!get_nsid()) {
+    set_nsid(nsid);
+  }
+  
+  return true;
+}
+
+bool freebsd_nvme_device::nvme_pass_through(const nvme_cmd_in & in, nvme_cmd_out & out)
+{
+  // nvme_passthru_cmd pt;
+  struct nvme_pt_command pt;
+  memset(&pt, 0, sizeof(pt));
+
+  pt.cmd.opc = in.opcode;
+  pt.cmd.nsid = in.nsid;
+  pt.buf = in.buffer;
+  pt.len = in.size;
+  pt.cmd.cdw10 = in.cdw10;
+  pt.cmd.cdw11 = in.cdw11;
+  pt.cmd.cdw12 = in.cdw12;
+  pt.cmd.cdw13 = in.cdw13;
+  pt.cmd.cdw14 = in.cdw14;
+  pt.cmd.cdw15 = in.cdw15;
+  pt.is_read = 1; // should we use in.direction()?
+  
+  int status = ioctl(get_fd(), NVME_PASSTHROUGH_CMD, &pt);
+
+  if (status < 0)
+    return set_err(errno, "NVME_PASSTHROUGH_CMD: %s", strerror(errno));
+
+  out.result=pt.cpl.cdw0; // Command specific result (DW0)
+
+  if (nvme_completion_is_error(&pt.cpl))
+    return set_nvme_err(out, nvme_completion_is_error(&pt.cpl));
+
+  return true;
+}
 
 /////////////////////////////////////////////////////////////////////////////
 /// Implement AMCC/3ware RAID support
@@ -489,10 +600,7 @@ private:
 freebsd_escalade_device::freebsd_escalade_device(smart_interface * intf, const char * dev_name,
     int escalade_type, int disknum)
 : smart_device(intf, dev_name, "3ware", "3ware"),
-  freebsd_smart_device(
-    escalade_type==CONTROLLER_3WARE_9000_CHAR ? "ATA_3WARE_9000" :
-    escalade_type==CONTROLLER_3WARE_678K_CHAR ? "ATA_3WARE_678K" :
-    /*             CONTROLLER_3WARE_678K     */ "ATA"             ),
+  freebsd_smart_device(),
   m_escalade_type(escalade_type), m_disknum(disknum)
 {
   set_info().info_name = strprintf("%s [3ware_disk_%02d]", dev_name, disknum);
@@ -704,7 +812,7 @@ private:
 freebsd_highpoint_device::freebsd_highpoint_device(smart_interface * intf, const char * dev_name,
   unsigned char controller, unsigned char channel, unsigned char port)
 : smart_device(intf, dev_name, "hpt", "hpt"),
-  freebsd_smart_device("ATA")
+  freebsd_smart_device()
 {
   m_hpt_data[0] = controller; m_hpt_data[1] = channel; m_hpt_data[2] = port;
   set_info().info_name = strprintf("%s [hpt_disk_%u/%u/%u]", dev_name, m_hpt_data[0], m_hpt_data[1], m_hpt_data[2]);
@@ -897,7 +1005,6 @@ public:
   virtual bool close();
   
 private:
-  int m_fd;
   struct cam_device *m_camdev;
 };
 
@@ -921,17 +1028,17 @@ bool freebsd_scsi_device::close(){
 freebsd_scsi_device::freebsd_scsi_device(smart_interface * intf,
   const char * dev_name, const char * req_type)
 : smart_device(intf, dev_name, "scsi", req_type),
-  freebsd_smart_device("SCSI")
+  freebsd_smart_device(),
+  m_camdev(0)
 {
 }
 
 
 bool freebsd_scsi_device::scsi_pass_through(scsi_cmnd_io * iop)
 {
-  int report=scsi_debugmode;
   union ccb *ccb;
 
-  if (report > 0) {
+  if (scsi_debugmode) {
     unsigned int k;
     const unsigned char * ucp = iop->cmnd;
     const char * np;
@@ -940,7 +1047,7 @@ bool freebsd_scsi_device::scsi_pass_through(scsi_cmnd_io * iop)
     pout(" [%s: ", np ? np : "<unknown opcode>");
     for (k = 0; k < iop->cmnd_len; ++k)
       pout("%02x ", ucp[k]);
-    if ((report > 1) && 
+    if ((scsi_debugmode > 1) && 
       (DXFER_TO_DEVICE == iop->dxfer_dir) && (iop->dxferp)) {
     int trunc = (iop->dxfer_len > 256) ? 1 : 0;
 
@@ -949,18 +1056,21 @@ bool freebsd_scsi_device::scsi_pass_through(scsi_cmnd_io * iop)
     dStrHex(iop->dxferp, (trunc ? 256 : iop->dxfer_len) , 1);
       }
       else
-        pout("]");
+        pout("]\n");
   }
 
   if(m_camdev==NULL) {
-    warnx("error: camdev=0!");
-    return -ENOTTY;
+    if (scsi_debugmode)
+      pout("  error: camdev=0!\n");
+    return set_err(ENOTTY);
   }
 
   if (!(ccb = cam_getccb(m_camdev))) {
-    warnx("error allocating ccb");
-    return -ENOMEM;
+    if (scsi_debugmode)
+      pout("  error allocating ccb\n");
+    return set_err(ENOMEM);
   }
+
   // mfi SAT layer is known to be buggy
   if(!strcmp("mfi",m_camdev->sim_name)) {
     if (iop->cmnd[0] == SAT_ATA_PASSTHROUGH_12 || iop->cmnd[0] == SAT_ATA_PASSTHROUGH_16) { 
@@ -984,8 +1094,8 @@ bool freebsd_scsi_device::scsi_pass_through(scsi_cmnd_io * iop)
     sizeof(struct ccb_scsiio) - sizeof(struct ccb_hdr));
 
   cam_fill_csio(&ccb->csio,
-    /*retrires*/ 1,
-    /*cbfcnp*/ NULL,
+    /* retries */ 1,
+    /* cbfcnp */ NULL,
     /* flags */ (iop->dxfer_dir == DXFER_NONE ? CAM_DIR_NONE :(iop->dxfer_dir == DXFER_FROM_DEVICE ? CAM_DIR_IN : CAM_DIR_OUT)),
     /* tagaction */ MSG_SIMPLE_Q_TAG,
     /* dataptr */ iop->dxferp,
@@ -996,44 +1106,81 @@ bool freebsd_scsi_device::scsi_pass_through(scsi_cmnd_io * iop)
   memcpy(ccb->csio.cdb_io.cdb_bytes,iop->cmnd,iop->cmnd_len);
 
   if (cam_send_ccb(m_camdev,ccb) < 0) {
-    warn("error sending SCSI ccb");
-    cam_error_print(m_camdev,ccb,CAM_ESF_ALL,CAM_EPF_ALL,stderr);
+    if (scsi_debugmode) {
+      pout("  error sending SCSI ccb\n");
+      cam_error_print(m_camdev,ccb,CAM_ESF_ALL,CAM_EPF_ALL,stderr);
+    }
     cam_freeccb(ccb);
-    return -EIO;
+    return set_err(EIO);
+  }
+
+  if (scsi_debugmode) {
+    pout("  CAM status=0x%x, SCSI status=0x%x, resid=0x%x\n",
+         ccb->ccb_h.status, ccb->csio.scsi_status, ccb->csio.resid);
+    if ((scsi_debugmode > 1) && (DXFER_FROM_DEVICE == iop->dxfer_dir)) {
+      int trunc, len;
+
+      len = iop->dxfer_len - ccb->csio.resid;
+      trunc = (len > 256) ? 1 : 0;
+      if (len > 0) {
+        pout("  Incoming data, len=%d%s:\n", len,
+             (trunc ? " [only first 256 bytes shown]" : ""));
+        dStrHex(iop->dxferp, (trunc ? 256 : len), 1);
+      }
+      else
+        pout("  Incoming data trimmed to nothing by resid\n");
+    }
   }
 
   if (((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) && ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_SCSI_STATUS_ERROR)) {
-    cam_error_print(m_camdev,ccb,CAM_ESF_ALL,CAM_EPF_ALL,stderr);
+    if (scsi_debugmode)
+      cam_error_print(m_camdev,ccb,CAM_ESF_ALL,CAM_EPF_ALL,stderr);
     cam_freeccb(ccb);
-    return -EIO;
+    return set_err(EIO);
   }
 
-  if (iop->sensep) {
-    iop->resp_sense_len = ccb->csio.sense_len - ccb->csio.sense_resid;
-    memcpy(iop->sensep,&(ccb->csio.sense_data),iop->resp_sense_len);
-  }
-
+  iop->resid = ccb->csio.resid;
   iop->scsi_status = ccb->csio.scsi_status;
+  if (iop->sensep && (ccb->ccb_h.status & CAM_AUTOSNS_VALID) != 0) {
+    if (scsi_debugmode)
+      pout("  sense_len=0x%x, sense_resid=0x%x\n",
+           ccb->csio.sense_len, ccb->csio.sense_resid);
+    iop->resp_sense_len = ccb->csio.sense_len - ccb->csio.sense_resid;
+    /* Some SCSI controller device drivers miscalculate the sense_resid
+       field so cap resp_sense_len on max_sense_len. */
+    if (iop->resp_sense_len > iop->max_sense_len)
+      iop->resp_sense_len = iop->max_sense_len;
+    if (iop->resp_sense_len > 0) {
+      memcpy(iop->sensep, &(ccb->csio.sense_data), iop->resp_sense_len);
+      if (scsi_debugmode) {
+        if (scsi_debugmode > 1) {
+          pout("  >>> Sense buffer, len=%zu:\n", iop->resp_sense_len);
+          dStrHex(iop->sensep, iop->resp_sense_len, 1);
+        }
+        if ((iop->sensep[0] & 0x7f) > 0x71)
+          pout("  status=0x%x: [desc] sense_key=0x%x asc=0x%x ascq=0x%x\n",
+               iop->scsi_status, iop->sensep[1] & 0xf,
+               iop->sensep[2], iop->sensep[3]);
+        else
+          pout("  status=0x%x: sense_key=0x%x asc=0x%x ascq=0x%x\n",
+               iop->scsi_status, iop->sensep[2] & 0xf,
+               iop->sensep[12], iop->sensep[13]);
+      }
+    }
+    else if (scsi_debugmode)
+      pout("  status=0x%x\n", iop->scsi_status);
+  }
+  else if (scsi_debugmode)
+    pout("  status=0x%x\n", iop->scsi_status);
 
   cam_freeccb(ccb);
-
-  if (report > 0) {
-    int trunc;
-
-    pout("  status=0\n");
-    trunc = (iop->dxfer_len > 256) ? 1 : 0;
-
-    pout("  Incoming data, len=%d%s:\n", (int)iop->dxfer_len,
-      (trunc ? " [only first 256 bytes shown]" : ""));
-    dStrHex(iop->dxferp, (trunc ? 256 : iop->dxfer_len) , 1);
-  }
 
   // mfip replacing PDT of the device so response does not make a sense
   // this sets PDT to 00h - direct-access block device
   if((!strcmp("mfi", m_camdev->sim_name) || !strcmp("mpt", m_camdev->sim_name))
    && iop->cmnd[0] == INQUIRY) {
-     if (report > 0) {
-        pout("device on %s controller, patching PDT\n", m_camdev->sim_name);
+     if (scsi_debugmode) {
+        pout("  device on %s controller, patching PDT\n", m_camdev->sim_name);
      }
      iop->dxferp[0] = iop->dxferp[0] & 0xe0;
   }
@@ -1077,7 +1224,7 @@ public:
 // Areca RAID Controller(SATA Disk)
 freebsd_areca_ata_device::freebsd_areca_ata_device(smart_interface * intf, const char * dev_name, int disknum, int encnum)
 : smart_device(intf, dev_name, "areca", "areca"),
-  freebsd_smart_device("ATA")
+  freebsd_smart_device()
 {
   set_disknum(disknum);
   set_encnum(encnum);
@@ -1087,10 +1234,8 @@ freebsd_areca_ata_device::freebsd_areca_ata_device(smart_interface * intf, const
 
 smart_device * freebsd_areca_ata_device::autodetect_open()
 {
-  int is_ata = 1;
-
   // autodetect device type
-  is_ata = arcmsr_get_dev_type();
+  int is_ata = arcmsr_get_dev_type();
   if(is_ata < 0)
   {
     set_err(EIO);
@@ -1146,7 +1291,7 @@ bool freebsd_areca_ata_device::arcmsr_unlock()
 // Areca RAID Controller(SAS Device)
 freebsd_areca_scsi_device::freebsd_areca_scsi_device(smart_interface * intf, const char * dev_name, int disknum, int encnum)
 : smart_device(intf, dev_name, "areca", "areca"),
-  freebsd_smart_device("SCSI")
+  freebsd_smart_device()
 {
   set_disknum(disknum);
   set_encnum(encnum);
@@ -1220,7 +1365,7 @@ bool freebsd_cciss_device::open()
 freebsd_cciss_device::freebsd_cciss_device(smart_interface * intf,
   const char * dev_name, unsigned char disknum)
 : smart_device(intf, dev_name, "cciss", "cciss"),
-  freebsd_smart_device("SCSI"),
+  freebsd_smart_device(),
   m_disknum(disknum)
 {
   set_info().info_name = strprintf("%s [cciss_disk_%02d]", dev_name, disknum);
@@ -1324,6 +1469,9 @@ protected:
 #endif
 
   virtual scsi_device * get_scsi_device(const char * name, const char * type);
+ 
+  virtual nvme_device * get_nvme_device(const char * name, const char * type,
+    unsigned nsid);
 
   virtual smart_device * autodetect_smart_device(const char * name);
 
@@ -1364,6 +1512,12 @@ ata_device * freebsd_smart_interface::get_atacam_device(const char * name, const
 scsi_device * freebsd_smart_interface::get_scsi_device(const char * name, const char * type)
 {
   return new freebsd_scsi_device(this, name, type);
+}
+
+nvme_device * freebsd_smart_interface::get_nvme_device(const char * name, const char * type,
+  unsigned nsid)
+{
+  return new freebsd_nvme_device(this, name, type, nsid);
 }
 
 // we are using CAM subsystem XPT enumerator to found all CAM (scsi/usb/ada/...)
@@ -1441,11 +1595,12 @@ bool get_dev_names_cam(std::vector<std::string> & names, bool show_all)
     }
 
     for (unsigned i = 0; i < ccb.cdm.num_matches; i++) {
-      struct bus_match_result *bus_result;
       struct device_match_result *dev_result;
       struct periph_match_result *periph_result;
 
       if (ccb.cdm.matches[i].type == DEV_MATCH_BUS) {
+        struct bus_match_result *bus_result;
+
         bus_result = &ccb.cdm.matches[i].result.bus_result;
 
         if (strcmp(bus_result->dev_name,"xpt") == 0) /* skip XPT bus at all */
@@ -1553,19 +1708,19 @@ int get_dev_names_ata(char*** names) {
           n = -1;
           goto end;
         };
-        bytes+=1+strlen(mp[n]);
         n++;
       };
     };
-  };  
+  };
+  if (n <= 0)
+    goto end;
   mp = (char **)reallocf(mp,n*(sizeof (char*))); // shrink to correct size
-  if (mp == NULL && n > 0 ) { // reallocf never fail for size=0, but may return NULL
+  if (mp == NULL) {
     serrno=errno;
     pout("Out of memory constructing scan device list (on line %d)\n", __LINE__);
     n = -1;
     goto end;
   };
-  bytes += (n)*(sizeof(char*)); // and set allocated byte count
 
 end:
   if (fd>=0)
@@ -1744,13 +1899,13 @@ static int usbdevlist(int busno,unsigned short & vendor_id,
   return false;
 #else // freebsd < 8.0 USB stack, ioctl interface
 
-  int  i, f, a, rc;
+  int  i, a, rc;
   char buf[50];
   int ncont;
 
   for (ncont = 0, i = 0; i < 10; i++) {
     snprintf(buf, sizeof(buf), "%s%d", USBDEV, i);
-    f = open(buf, O_RDONLY);
+    int f = open(buf, O_RDONLY);
     if (f >= 0) {
       memset(done, 0, sizeof done);
       for (a = 1; a < USB_MAX_DEVICES; a++) {
@@ -1778,12 +1933,11 @@ smart_device * freebsd_smart_interface::autodetect_smart_device(const char * nam
   struct cam_device *cam_dev;
   union ccb ccb;
   int bus=-1;
-  int i,c;
-  int len;
+  int i;
   const char * test_name = name;
 
   // if dev_name null, or string length zero
-  if (!name || !(len = strlen(name)))
+  if (!name || !*name)
     return 0;
 
   // Dereference symlinks
@@ -1805,7 +1959,7 @@ smart_device * freebsd_smart_interface::autodetect_smart_device(const char * nam
     // check ATA/ATAPI devices
     for (i = 0; i < numata; i++) {
       if(!strcmp(atanames[i],test_name)) {
-        for (c = i; c < numata; c++) free(atanames[c]);
+        for (int c = i; c < numata; c++) free(atanames[c]);
         free(atanames);
         return new freebsd_ata_device(this, test_name, "");
       }
@@ -1875,6 +2029,11 @@ smart_device * freebsd_smart_interface::autodetect_smart_device(const char * nam
   // device is LSI raid supported by mfi driver
   if(!strncmp("/dev/mfid", test_name, strlen("/dev/mfid")))
     set_err(EINVAL, "To monitor disks on LSI RAID load mfip.ko module and run 'smartctl -a /dev/passX' to show SMART information");
+
+  // form /dev/nvme* or nvme*
+  if(!strncmp("/dev/nvme", test_name, strlen("/dev/nvme")))
+    return new freebsd_nvme_device(this, name, "", 0 /* use default nsid */);
+
   // device type unknown
   return 0;
 }
@@ -1882,13 +2041,15 @@ smart_device * freebsd_smart_interface::autodetect_smart_device(const char * nam
 
 smart_device * freebsd_smart_interface::get_custom_smart_device(const char * name, const char * type)
 {
-  // 3Ware ?
-  static const char * fbsd_dev_twe_ctrl = "/dev/twe";
-  static const char * fbsd_dev_twa_ctrl = "/dev/twa";
-  static const char * fbsd_dev_tws_ctrl = "/dev/tws";
-  int disknum = -1, n1 = -1, n2 = -1, contr = -1;
+  int disknum = -1, n1 = -1, n2 = -1;
 
   if (sscanf(type, "3ware,%n%d%n", &n1, &disknum, &n2) == 1 || n1 == 6) {
+    // 3Ware ?
+    static const char * fbsd_dev_twe_ctrl = "/dev/twe";
+    static const char * fbsd_dev_twa_ctrl = "/dev/twa";
+    static const char * fbsd_dev_tws_ctrl = "/dev/tws";
+    int contr = -1;
+
     if (n2 != (int)strlen(type)) {
       set_err(EINVAL, "Option -d 3ware,N requires N to be a non-negative integer");
       return 0;

@@ -1,10 +1,10 @@
 /*
  * atacmds.h
  *
- * Home page of code is: http://smartmontools.sourceforge.net
+ * Home page of code is: http://www.smartmontools.org
  *
- * Copyright (C) 2002-11 Bruce Allen <smartmontools-support@lists.sourceforge.net>
- * Copyright (C) 2008-12 Christian Franke <smartmontools-support@lists.sourceforge.net>
+ * Copyright (C) 2002-11 Bruce Allen
+ * Copyright (C) 2008-15 Christian Franke
  * Copyright (C) 1999-2000 Michael Cornwell <cornwell@acm.org>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,7 +25,7 @@
 #ifndef ATACMDS_H_
 #define ATACMDS_H_
 
-#define ATACMDS_H_CVSID "$Id: atacmds.h 3825 2013-07-06 21:38:25Z samm2 $"
+#define ATACMDS_H_CVSID "$Id: atacmds.h 4162 2015-10-31 16:36:16Z chrfranke $"
 
 #include "dev_interface.h" // ata_device
 
@@ -521,7 +521,7 @@ ASSERT_SIZEOF_STRUCT(ata_selective_self_test_log, 512);
 //   T13/1699-D Revision 3f (Working Draft), December 11, 2006.
 
 // SCT Status response (read with SMART_READ_LOG page 0xe0)
-// Table 60 of T13/1699-D Revision 3f 
+// Table 182 of T13/BSR INCITS 529 (ACS-4) Revision 04, August 25, 2014
 #pragma pack(1)
 struct ata_sct_status_response
 {
@@ -545,7 +545,8 @@ struct ata_sct_status_response
   unsigned char byte205;            // 205: reserved (T13/e06152r0-2: Average lifetime temperature)
   unsigned int over_limit_count;    // 206-209: # intervals since last reset with temperature > Max Op Limit
   unsigned int under_limit_count;   // 210-213: # intervals since last reset with temperature < Min Op Limit
-  unsigned char bytes214_479[266];  // 214-479: reserved
+  unsigned short smart_status;      // 214-215: LBA(32:8) of SMART RETURN STATUS (0, 0x2cf4, 0xc24f) (ACS-4)
+  unsigned char bytes216_479[479-216+1]; // 216-479: reserved
   unsigned char vendor_specific[32];// 480-511: vendor specific
 } ATTR_PACKED;
 #pragma pack()
@@ -683,9 +684,11 @@ enum ata_attr_raw_format
 
 // Attribute flags
 enum {
-  ATTRFLAG_INCREASING = 0x01,   // Value not reset (for reallocated/pending counts)
-  ATTRFLAG_NO_NORMVAL = 0x02,   // Normalized value not valid
-  ATTRFLAG_NO_WORSTVAL = 0x04   // Worst value not valid
+  ATTRFLAG_INCREASING  = 0x01, // Value not reset (for reallocated/pending counts)
+  ATTRFLAG_NO_NORMVAL  = 0x02, // Normalized value not valid
+  ATTRFLAG_NO_WORSTVAL = 0x04, // Worst value not valid
+  ATTRFLAG_HDD_ONLY    = 0x08, // DEFAULT setting for HDD only
+  ATTRFLAG_SSD_ONLY    = 0x10, // DEFAULT setting for SSD only
 };
 
 // Vendor attribute display defs for all attribute ids
@@ -785,7 +788,7 @@ bool ataReadSmartLog(ata_device * device, unsigned char logaddr,
                      void * data, unsigned nsectors);
 // Read SMART Extended Comprehensive Error Log
 bool ataReadExtErrorLog(ata_device * device, ata_smart_exterrlog * log,
-                        unsigned nsectors, firmwarebug_defs firwarebugs);
+                        unsigned page, unsigned nsectors, firmwarebug_defs firmwarebugs);
 // Read SMART Extended Self-test Log
 bool ataReadExtSelfTestLog(ata_device * device, ata_smart_extselftestlog * log,
                            unsigned nsectors);
