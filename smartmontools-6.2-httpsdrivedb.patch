@@ -1,0 +1,12 @@
+diff -up smartmontools-6.2/update-smart-drivedb.in.httpsdrivedb smartmontools-6.2/update-smart-drivedb.in
+--- smartmontools-6.2/update-smart-drivedb.in.httpsdrivedb	2016-09-07 17:01:31.459785835 +0200
++++ smartmontools-6.2/update-smart-drivedb.in	2016-09-07 17:01:31.471785916 +0200
+@@ -40,7 +40,7 @@ DEST="$drivedbdir/drivedb.h"
+ SMARTCTL="$sbindir/smartctl"
+ 
+ # Download URL for sourceforge code browser
+-SRCEXPR='http://sourceforge.net/p/smartmontools/code/HEAD/tree/$location/smartmontools/drivedb.h?format=raw'
++SRCEXPR='https://sourceforge.net/p/smartmontools/code/HEAD/tree/$location/smartmontools/drivedb.h?format=raw'
+ 
+ # Parse options
+ q="-q "

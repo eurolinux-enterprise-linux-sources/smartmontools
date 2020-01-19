@@ -1,0 +1,12 @@
+diff -up smartmontools-6.2/os_linux.cpp.discovermore smartmontools-6.2/os_linux.cpp
+--- smartmontools-6.2/os_linux.cpp.discovermore	2016-05-05 10:28:19.661725361 +0200
++++ smartmontools-6.2/os_linux.cpp	2016-05-05 10:28:43.252945983 +0200
+@@ -2488,7 +2488,7 @@ bool linux_smart_interface::get_dev_list
+   }
+ 
+   // did we find too many paths?
+-  const int max_pathc = 32;
++  const int max_pathc = 1024;
+   int n = (int)globbuf.gl_pathc;
+   if (n > max_pathc) {
+     pout("glob(3) found %d > MAX=%d devices matching pattern %s: ignoring %d paths\n",

@@ -1,7 +1,7 @@
 Summary:	Tools for monitoring SMART capable hard disks
 Name:		smartmontools
 Version:	6.2
-Release:	4%{?dist}
+Release:	7%{?dist}
 Epoch:		1
 Group:		System Environment/Base
 License:	GPLv2+
@@ -12,6 +12,12 @@ Source4:	smartdnotify
 
 #fedora/rhel specific
 Patch1:		smartmontools-5.38-defaultconf.patch
+#from upstream, rhbz#1212582
+Patch2: smartmontools-6.4-fdleak.patch
+#from upstream, rhbz#1294999
+Patch3: smartmontools-6.2-discovermore.patch
+Patch4: smartmontools-6.2-httpsdrivedb.patch
+Patch5: smartmontools-6.2-drivedbman.patch
 
 BuildRoot:	%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 Requires:	fileutils mailx chkconfig
@@ -35,6 +41,10 @@ failure.
 %prep
 %setup -q 
 %patch1 -p1 -b .defaultconf
+%patch2 -p1 -b .fdleak
+%patch3 -p1 -b .discovermore
+%patch4 -p1 -b .httpsdrivedb
+%patch5 -p1 -b .drivedbman
 
 # fix encoding
 for fe in AUTHORS ChangeLog
@@ -104,10 +114,21 @@ fi
 %{_sbindir}/update-smart-drivedb
 %{_sbindir}/smartctl
 %{_mandir}/man?/smart*.*
+%{_mandir}/man8/update-smart-drivedb.8*
 %{_libexecdir}/%{name}
 %{_datadir}/%{name}
 
 %changelog
+* Wed Sep 07 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-7
+- add update-smart-drivedb.8 man page (#1367237)
+- fix drivedb update url (#1364830)
+
+* Thu May 05 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-6
+- allow to discover more devices (#1294999)
+
+* Mon May 02 2016 Michal Hlavinka <mhlavink@redhat.com> - 1:6.2-5
+- do not leak file descriptor when calling mailx (#1212582)
+
 * Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 1:6.2-4
 - Mass rebuild 2014-01-24
 
